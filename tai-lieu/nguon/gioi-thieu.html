@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Trợ lý báo cáo bán hàng qua Telegram</title>
+<style>
+@page { size: 540px 960px; margin: 0; }
+:root {
+  --ink: #1d2127;
+  --muted: #5d6672;
+  --soft-ink: #3d444d;
+  --line: #eadfd2;
+  --paper: #fffaf4;
+  --accent: #c2410c;
+  --accent-dark: #7c2d12;
+  --accent-soft: #fdeee3;
+  --red: #c8281e;
+  --red-soft: #fdecea;
+  --amber: #b45309;
+  --amber-soft: #fdf3e1;
+  --blue: #1d5fc9;
+  --blue-soft: #e9f1fe;
+  --green: #0d7a46;
+  --green-soft: #e5f5ec;
+  --chat-bg: #dfe8ee;
+  --bubble-out: #e3f7cf;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--paper); }
+body {
+  font-family: "Segoe UI", Arial, sans-serif;
+  color: var(--ink);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+b { font-weight: 700; }
+
+/* ---------- page frame ---------- */
+.page {
+  width: 540px; height: 960px; overflow: hidden; position: relative;
+  padding: 32px 34px 30px; background: var(--paper);
+  display: flex; flex-direction: column;
+  break-after: page;
+}
+.page:last-child { break-after: auto; }
+.bar {
+  display: flex; justify-content: space-between;
+  font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); padding-bottom: 13px; border-bottom: 1.5px solid var(--line); margin-bottom: 24px;
+}
+.bar .num { color: var(--accent); }
+.kicker {
+  align-self: flex-start; font-size: 14px; font-weight: 700; letter-spacing: .1em; color: #fff;
+  background: var(--accent); padding: 5px 13px; border-radius: 999px; margin-bottom: 12px;
+}
+h2 { font-size: 31px; line-height: 1.2; font-weight: 700; letter-spacing: -.01em; margin-bottom: 10px; }
+h3 { font-size: 21px; font-weight: 700; margin: 20px 0 10px; }
+.lead { font-size: 18.5px; line-height: 1.5; color: var(--muted); margin-bottom: 20px; }
+.lead.small { font-size: 15.5px; margin-bottom: 16px; font-style: italic; }
+.after { font-size: 16.5px; line-height: 1.5; color: var(--muted); margin-top: 16px; }
+
+.list { list-style: none; }
+.list li { font-size: 17px; line-height: 1.5; padding-left: 22px; position: relative; margin-bottom: 9px; color: var(--soft-ink); }
+.list li::before { content: ""; position: absolute; left: 3px; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.list li b { color: var(--ink); }
+.say {
+  display: inline-block; background: var(--bubble-out); border: 1px solid #c4e3a8; border-radius: 9px;
+  padding: 0 8px; font-weight: 600; color: var(--ink); white-space: nowrap;
+}
+
+/* ---------- cover ---------- */
+.cover { padding: 0; }
+.hero {
+  background: linear-gradient(160deg, #d4561a 0%, var(--accent) 45%, var(--accent-dark) 100%);
+  color: #fff; padding: 54px 36px 40px;
+}
+.hero-label { font-size: 14px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; opacity: .85; margin-bottom: 18px; }
+.hero h1 { font-size: 42px; line-height: 1.15; font-weight: 700; letter-spacing: -.015em; margin-bottom: 16px; }
+.hero-sub { font-size: 18.5px; line-height: 1.45; opacity: .92; }
+.cover-body { padding: 28px 34px 26px; display: flex; flex-direction: column; flex: 1; }
+.promise { font-size: 19px; line-height: 1.5; margin-bottom: 20px; color: var(--soft-ink); }
+.promise b { color: var(--accent); }
+.feat { display: flex; gap: 16px; align-items: center; padding: 17px 0; border-bottom: 1px solid var(--line); }
+.feat:last-of-type { border-bottom: 0; }
+.ico { font-size: 28px; line-height: 1; flex: none; width: 46px; height: 46px; border-radius: 12px; background: var(--accent-soft); display: flex; align-items: center; justify-content: center; }
+.feat .ico { width: 58px; height: 58px; font-size: 36px; border-radius: 14px; }
+.feat b { display: block; font-size: 20px; margin-bottom: 2px; }
+.feat span { font-size: 16.5px; color: var(--muted); line-height: 1.4; }
+.verdict {
+  margin-top: auto; display: flex; gap: 14px; align-items: center;
+  background: var(--green-soft); border: 1.5px solid #b5e0c6; border-radius: 16px; padding: 16px 18px;
+}
+.tick { flex: none; width: 44px; height: 44px; border-radius: 50%; background: var(--green); color: #fff; font-size: 26px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.verdict b { display: block; font-size: 19px; color: var(--green); }
+.verdict span { font-size: 15.5px; color: var(--soft-ink); }
+.cover-foot { text-align: center; font-size: 14px; color: var(--muted); margin-top: 14px; }
+
+/* ---------- how it works ---------- */
+.steps { display: flex; flex-direction: column; }
+.step { display: flex; gap: 16px; background: #fff; border: 1.5px solid var(--line); border-radius: 16px; padding: 18px 18px; }
+.step-n { flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 20px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.step b { display: block; font-size: 19px; line-height: 1.3; margin-bottom: 5px; }
+.step span { font-size: 16.5px; line-height: 1.45; color: var(--muted); }
+.arrow { text-align: center; color: var(--accent); font-size: 26px; line-height: 1; padding: 6px 0; font-weight: 700; }
+.note { margin-top: 28px; background: var(--blue-soft); border-radius: 14px; padding: 16px 18px; font-size: 16.5px; line-height: 1.5; color: var(--soft-ink); }
+.note b { color: var(--blue); }
+
+/* ---------- alert cards ---------- */
+.alert { border-radius: 14px; padding: 13px 16px 13px 18px; margin-bottom: 11px; border-left: 6px solid; display: flex; flex-direction: column; gap: 3px; }
+.alert b { font-size: 19px; }
+.alert span { font-size: 16.5px; line-height: 1.45; color: var(--soft-ink); }
+.alert.red { background: var(--red-soft); border-color: var(--red); }
+.alert.red b { color: var(--red); }
+.alert.amber { background: var(--amber-soft); border-color: #e08a1e; }
+.alert.amber b { color: var(--amber); }
+.alert.blue { background: var(--blue-soft); border-color: var(--blue); }
+.alert.blue b { color: var(--blue); }
+
+/* ---------- chat mockup ---------- */
+.phone { border-radius: 22px; overflow: hidden; background: var(--chat-bg); border: 1px solid #cddae3; box-shadow: 0 6px 18px rgba(60, 40, 20, .08); }
+.chat-head { background: #fff; display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid #d9e2e8; }
+.avatar { width: 38px; height: 38px; border-radius: 50%; background: linear-gradient(135deg, #f08a3e, var(--accent)); color: #fff; font-weight: 700; font-size: 15px; display: flex; align-items: center; justify-content: center; }
+.who b { display: block; font-size: 16px; }
+.who small { font-size: 13px; color: #7a8794; }
+.chat { padding: 14px 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.msg {
+  background: #fff; border-radius: 16px 16px 16px 6px; padding: 11px 14px 22px;
+  font-size: 16px; line-height: 1.42; position: relative; max-width: 97%; align-self: flex-start;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, .06);
+}
+.msg.out { background: var(--bubble-out); border-radius: 16px 16px 6px 16px; align-self: flex-end; padding: 9px 50px 9px 14px; font-weight: 600; }
+.msg.out .time { bottom: 9px; }
+.msg p { margin: 0; }
+.m-title { font-weight: 700; }
+.m-sub { color: var(--muted); }
+.m-h { font-weight: 700; margin-top: 9px !important; }
+.time { position: absolute; right: 12px; bottom: 5px; font-size: 12px; color: #8a97a3; font-weight: 400; }
+.file { display: flex; gap: 12px; align-items: center; padding-bottom: 16px; }
+.file-ico { flex: none; width: 44px; height: 44px; border-radius: 50%; background: #1f8f55; color: #fff; font-size: 12.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; letter-spacing: .03em; }
+.file b { display: block; font-size: 15.5px; }
+.file small { font-size: 13.5px; color: #7a8794; }
+
+/* ---------- staff ---------- */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-bottom: 16px; }
+.tile { background: #fff; border: 1.5px solid var(--line); border-radius: 14px; padding: 14px 14px 13px; display: flex; flex-direction: column; gap: 2px; }
+.tile .ico { width: 40px; height: 40px; font-size: 23px; margin-bottom: 7px; }
+.tile b { font-size: 18px; }
+.tile span { font-size: 15px; line-height: 1.4; color: var(--muted); }
+.box { background: var(--accent-soft); border-radius: 14px; padding: 15px 17px; display: flex; flex-direction: column; gap: 4px; }
+.box b { font-size: 18px; color: var(--accent-dark); }
+.box span { font-size: 16px; line-height: 1.5; color: var(--soft-ink); }
+
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 16px; }
+.pair div { background: #fff; border: 1.5px solid var(--line); border-radius: 14px; padding: 13px 14px; font-size: 15.5px; line-height: 1.45; color: var(--soft-ink); }
+.pair b { display: block; font-size: 16.5px; color: var(--ink); margin-bottom: 2px; }
+
+/* ---------- distributors ---------- */
+.owner { background: var(--accent); color: #fff; border-radius: 16px; padding: 15px 18px; text-align: center; }
+.owner b { display: block; font-size: 20px; margin-bottom: 3px; }
+.owner span { font-size: 16px; line-height: 1.45; opacity: .93; }
+.tree { display: block; color: var(--accent); }
+.npps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 17px; }
+.npp { background: #fff; border: 1.5px solid var(--line); border-radius: 14px; padding: 12px 8px; text-align: center; }
+.npp b { display: block; font-size: 17.5px; margin-bottom: 3px; }
+.npp span { font-size: 14px; line-height: 1.35; color: var(--muted); }
+
+/* ---------- checklist ---------- */
+.check { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.check:last-child { border-bottom: 0; }
+.check .n { flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 16px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+.check b { display: block; font-size: 17.5px; line-height: 1.3; margin-bottom: 3px; }
+.check span { font-size: 15.5px; line-height: 1.45; color: #4a525c; }
+
+/* ---------- questions & steps ---------- */
+.qs { list-style: none; counter-reset: q; }
+.qs li { counter-increment: q; font-size: 17px; line-height: 1.45; padding: 0 0 10px 40px; position: relative; color: var(--soft-ink); }
+.qs li::before { content: counter(q); position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 15px; display: flex; align-items: center; justify-content: center; }
+.road { display: flex; align-items: stretch; gap: 6px; }
+.road .st { flex: 1; background: #fff; border: 1.5px solid var(--line); border-radius: 14px; padding: 12px 10px; text-align: center; font-size: 15px; line-height: 1.35; color: var(--soft-ink); }
+.road .st b { display: block; font-size: 13px; letter-spacing: .08em; color: var(--accent); margin-bottom: 4px; }
+.road .to { align-self: center; color: var(--accent); font-weight: 700; font-size: 20px; }
+.cost { margin-top: 24px; background: var(--green-soft); border-radius: 14px; padding: 15px 17px; font-size: 16px; line-height: 1.5; color: var(--soft-ink); }
+.cost b { color: var(--green); }
+</style>
+</head>
+<body>
+
+<!-- 1. Cover -->
+<section class="page cover">
+  <div class="hero">
+    <div class="hero-label">Tài liệu giới thiệu</div>
+    <h1>Trợ lý báo cáo<br>bán hàng qua Telegram</h1>
+    <p class="hero-sub">Dành cho hệ thống nhà phân phối bánh kẹo đang dùng KiotViet</p>
+  </div>
+  <div class="cover-body">
+    <p class="promise">Không cần mở KiotViet, không cần ngồi máy tính. Số liệu quan trọng <b>tự gửi về điện thoại</b> của anh.</p>
+    <div class="feat"><span class="ico">📦</span><div><b>Kho hàng</b><span>Mặt hàng nào sắp hết, tồn nhiều, bán chậm</span></div></div>
+    <div class="feat"><span class="ico">⏳</span><div><b>Hạn sử dụng</b><span>Lô nào sắp hết hạn để kịp đẩy hàng</span></div></div>
+    <div class="feat"><span class="ico">👤</span><div><b>Nhân viên</b><span>Ai bán được bao nhiêu, đạt bao nhiêu % chỉ tiêu</span></div></div>
+    <div class="verdict">
+      <span class="tick"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <div><b>Làm được cả hai việc anh cần</b><span>Báo cáo tồn kho tự động và theo dõi từng nhân viên</span></div>
+    </div>
+    <p class="cover-foot">10 trang ngắn · đọc khoảng 3 phút</p>
+  </div>
+</section>
+
+<!-- 2. How it works -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">2 / 10</span></div>
+  <h2>Hoạt động thế nào?</h2>
+  <p class="lead">Chỉ 3 bước, chạy tự động cả ngày lẫn đêm.</p>
+  <div class="steps">
+    <div class="step"><div class="step-n">1</div><div><b>Nhà phân phối bán hàng trên KiotViet như bình thường</b><span>Không đổi thói quen, không phải cài thêm gì.</span></div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">2</div><div><b>Trợ lý tự đọc số liệu từ KiotViet</b><span>Tồn kho, hạn sử dụng, hóa đơn của từng nhân viên. Chỉ đọc, không sửa hay xóa gì trên KiotViet.</span></div></div>
+    <div class="arrow">↓</div>
+    <div class="step"><div class="step-n">3</div><div><b>Gửi báo cáo về Telegram</b><span>Đến giờ là tự gửi. Cần hỏi gì thì nhắn cho trợ lý, trả lời ngay.</span></div></div>
+  </div>
+  <div class="note"><b>Telegram là gì?</b> Là ứng dụng nhắn tin miễn phí, dùng giống Zalo. Cài trên điện thoại là nhận được báo cáo.</div>
+</section>
+
+<!-- 3. Inventory: what you get -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">3 / 10</span></div>
+  <span class="kicker">VIỆC 1</span>
+  <h2>Báo cáo tồn kho tự động</h2>
+  <p class="lead">Trợ lý chia hàng thành 3 nhóm cần chú ý:</p>
+  <div class="alert red"><b>Sắp hết hàng</b><span>Còn ít hơn mức tối thiểu anh đặt. Kịp nhập thêm, không bị lỡ đơn.</span></div>
+  <div class="alert amber"><b>Sắp hết hạn</b><span>Lô hàng còn dưới 30 ngày (hoặc số ngày anh chọn). Kịp đẩy bán, làm khuyến mãi, tránh hàng hỏng phải hủy.</span></div>
+  <div class="alert blue"><b>Tồn nhiều, bán chậm</b><span>Tồn vượt mức, hoặc nhiều ngày không bán được. Biết để bớt nhập, tránh đọng vốn.</span></div>
+  <h3>Gửi khi nào?</h3>
+  <ul class="list">
+    <li><b>Theo giờ cố định:</b> ví dụ 8h sáng, 12h trưa, 5h chiều. Muốn mỗi tiếng một lần cũng được.</li>
+    <li><b>Báo gấp</b> khi có mặt hàng vừa xuống dưới mức tối thiểu, không cần đợi đến giờ.</li>
+    <li><b>Hỏi lúc nào cũng được:</b> nhắn <span class="say">tồn bánh quy</span> là biết còn bao nhiêu ở từng kho.</li>
+  </ul>
+</section>
+
+<!-- 4. Inventory message sample -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">4 / 10</span></div>
+  <h2>Tin nhắn anh sẽ nhận</h2>
+  <p class="lead small">Ví dụ mẫu, số liệu chỉ để minh họa.</p>
+  <div class="phone">
+    <div class="chat-head"><div class="avatar">TL</div><div class="who"><b>Trợ lý Báo cáo</b><small>bot</small></div></div>
+    <div class="chat">
+      <div class="msg">
+        <p class="m-title">📦 BÁO CÁO TỒN KHO · 08:00 23/11</p>
+        <p class="m-sub">NPP Minh An · Kho Hà Đông</p>
+        <p class="m-h">🔴 SẮP HẾT HÀNG (3)</p>
+        <p>• Bánh quy bơ hộp thiếc: còn <b>12 hộp</b> (tối thiểu 50)</p>
+        <p>• Kẹo dẻo trái cây 100g: còn <b>30 gói</b> (tối thiểu 200)</p>
+        <p>• Bánh trứng cuộn: còn <b>6 thùng</b> (tối thiểu 20)</p>
+        <p class="m-h">🟠 SẮP HẾT HẠN (2)</p>
+        <p>• Bánh xốp kem: 40 hộp, hết hạn <b>05/12</b>, còn 12 ngày</p>
+        <p>• Bánh gạo vị ngọt: 25 gói, hết hạn <b>15/12</b>, còn 22 ngày</p>
+        <p class="m-h">🔵 TỒN NHIỀU, BÁN CHẬM (1)</p>
+        <p>• Kẹo bạc hà: 600 gói, <b>20 ngày</b> chưa bán được gói nào</p>
+        <span class="time">08:00</span>
+      </div>
+      <div class="msg">
+        <div class="file"><div class="file-ico">XLSX</div><div><b>BaoCao_TonKho_23-11.xlsx</b><small>Chi tiết toàn bộ mặt hàng</small></div></div>
+        <span class="time">08:00</span>
+      </div>
+    </div>
+  </div>
+  <p class="after">Kèm file Excel chi tiết, bấm vào là mở được ngay trên điện thoại.</p>
+</section>
+
+<!-- 5. Staff: what you see -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">5 / 10</span></div>
+  <span class="kicker">VIỆC 2</span>
+  <h2>Theo dõi từng nhân viên</h2>
+  <p class="lead">Hóa đơn nào trên KiotViet cũng ghi tên người bán, nên trợ lý tính riêng được cho từng người.</p>
+  <div class="grid">
+    <div class="tile"><span class="ico">💰</span><b>Doanh thu</b><span>theo ngày, tuần, tháng</span></div>
+    <div class="tile"><span class="ico">🧾</span><b>Số đơn</b><span>và số cửa hàng đã mua</span></div>
+    <div class="tile"><span class="ico">📦</span><b>Mặt hàng</b><span>bán loại nào, được bao nhiêu</span></div>
+    <div class="tile"><span class="ico">🎯</span><b>Chỉ tiêu</b><span>đạt bao nhiêu %, nhanh hay chậm</span></div>
+  </div>
+  <div class="box">
+    <b>Chỉ tiêu do anh đặt</b>
+    <span>Theo doanh thu, hoặc theo mặt hàng cần đẩy (ví dụ: tháng này mỗi người bán 300 hộp bánh quy bơ). Đầu tháng gửi file Excel chỉ tiêu vào Telegram, sau đó trợ lý tự so sánh mỗi ngày.</span>
+  </div>
+  <h3>Xem bằng cách nào?</h3>
+  <ul class="list">
+    <li><b>Cuối ngày</b> tự gửi bảng xếp hạng nhân viên.</li>
+    <li><b>Muốn xem ai</b> thì nhắn tên người đó, ví dụ <span class="say">Tuấn tháng 11</span>.</li>
+  </ul>
+</section>
+
+<!-- 6. Staff lookup sample -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">6 / 10</span></div>
+  <h2>Muốn xem ai, nhắn tên người đó</h2>
+  <p class="lead small">Ví dụ mẫu, số liệu chỉ để minh họa.</p>
+  <div class="phone">
+    <div class="chat-head"><div class="avatar">TL</div><div class="who"><b>Trợ lý Báo cáo</b><small>bot</small></div></div>
+    <div class="chat">
+      <div class="msg out">Tuấn tháng 11<span class="time">09:15</span></div>
+      <div class="msg">
+        <p class="m-title">👤 NGUYỄN VĂN TUẤN</p>
+        <p class="m-sub">NPP Minh An · Tháng 11, tính đến hết 22/11</p>
+        <p class="m-h">💰 Doanh thu: 186.500.000đ</p>
+        <p>🎯 Chỉ tiêu tháng: 250.000.000đ</p>
+        <p>📊 Đã đạt <b>75%</b>, thời gian đã qua 73%</p>
+        <p>✅ <b>Đang đúng tiến độ</b></p>
+        <p class="m-h">🧾 142 đơn · 38 cửa hàng đã mua</p>
+        <p class="m-h">🔝 BÁN NHIỀU NHẤT</p>
+        <p>1. Bánh quy bơ hộp thiếc: 320 hộp · 48 triệu</p>
+        <p>2. Bánh xốp kem: 1.150 gói · 34,5 triệu</p>
+        <p>3. Kẹo dẻo trái cây: 2.400 gói · 28,8 triệu</p>
+        <p class="m-h">🎯 Chỉ tiêu bánh quy bơ: 320/300 hộp, vượt 7% ✅</p>
+        <span class="time">09:15</span>
+      </div>
+    </div>
+  </div>
+  <ul class="list" style="margin-top:20px">
+    <li><b>Gõ không dấu cũng được</b>, ví dụ <span class="say">tuan thang 11</span>.</li>
+    <li><b>Xem theo hôm nay, tuần này, tháng trước</b>… tùy anh muốn xem khoảng nào.</li>
+  </ul>
+</section>
+
+<!-- 7. Daily ranking sample -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">7 / 10</span></div>
+  <h2>Cuối ngày tự gửi bảng xếp hạng</h2>
+  <p class="lead small">Ví dụ mẫu, số liệu chỉ để minh họa.</p>
+  <div class="phone">
+    <div class="chat-head"><div class="avatar">TL</div><div class="who"><b>Trợ lý Báo cáo</b><small>bot</small></div></div>
+    <div class="chat">
+      <div class="msg">
+        <p class="m-title">🏆 KẾT QUẢ BÁN HÀNG · 22/11</p>
+        <p class="m-sub">NPP Minh An</p>
+        <p class="m-h">🥇 Trần Thị Hoa: 15.200.000đ · 12 đơn</p>
+        <p>🥈 Nguyễn Văn Tuấn: 12.800.000đ · 9 đơn</p>
+        <p>🥉 Lê Minh Đức: 9.600.000đ · 8 đơn</p>
+        <p>4️⃣ Phạm Thu Trang: 4.100.000đ · 3 đơn</p>
+        <p class="m-h">💰 Tổng cả nhà phân phối: 41.700.000đ</p>
+        <p>📈 Tăng 8% so với hôm qua</p>
+        <p class="m-h">⚠️ CẦN CHÚ Ý</p>
+        <p>Phạm Thu Trang mới đạt 41% chỉ tiêu tháng, đang chậm tiến độ.</p>
+        <span class="time">18:00</span>
+      </div>
+    </div>
+  </div>
+  <div class="pair">
+    <div><b>Gửi vào nhóm nhân viên</b>để mọi người thấy thứ hạng, tạo động lực thi đua.</div>
+    <div><b>Hoặc chỉ gửi riêng</b>cho anh và quản lý, nhân viên không thấy.</div>
+  </div>
+</section>
+
+<!-- 8. Many distributors -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">8 / 10</span></div>
+  <h2>Nhiều nhà phân phối, mỗi bên một nhóm riêng</h2>
+  <p class="lead">Thêm bao nhiêu nhà phân phối cũng được. Số liệu của bên nào thì bên đó xem.</p>
+  <div class="owner"><b>Nhóm tổng của anh</b><span>Xem tất cả nhà phân phối. Biết bên nào bán tốt, bên nào tồn nhiều.</span></div>
+  <svg class="tree" width="472" height="36" viewBox="0 0 472 36" aria-hidden="true">
+    <path d="M236 0 V18 M74 18 H398 M74 18 V36 M236 18 V36 M398 18 V36" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+  </svg>
+  <div class="npps">
+    <div class="npp"><b>NPP A</b><span>Nhóm riêng, chỉ thấy số của mình</span></div>
+    <div class="npp"><b>NPP B</b><span>Nhóm riêng, chỉ thấy số của mình</span></div>
+    <div class="npp"><b>NPP C</b><span>Nhóm riêng, chỉ thấy số của mình</span></div>
+  </div>
+  <h3>Sau này làm thêm được</h3>
+  <ul class="list">
+    <li><b>Cửa hàng lâu không lấy hàng</b> (ví dụ quá 14 ngày): nhắc nhân viên ghé chăm sóc.</li>
+    <li><b>So sánh các nhà phân phối</b> theo tuần, theo tháng.</li>
+    <li><b>Hàng bán chạy nhất, chậm nhất</b> trong toàn hệ thống.</li>
+    <li><b>Báo cáo tổng cuối tháng</b>, kèm file Excel.</li>
+  </ul>
+</section>
+
+<!-- 9. What to prepare -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">9 / 10</span></div>
+  <h2>Để chạy được, cần chuẩn bị</h2>
+  <p class="lead">Phần lớn chỉ làm một lần lúc đầu.</p>
+  <div class="check"><span class="n">1</span><div><b>Mỗi nhà phân phối lấy “mã kết nối” trong KiotViet</b><span>Vào Thiết lập cửa hàng → Thiết lập kết nối API. Em hướng dẫn từng bước. Nếu gói KiotViet chưa có mục này thì hỏi tổng đài KiotViet.</span></div></div>
+  <div class="check"><span class="n">2</span><div><b>Nhập hạn sử dụng khi nhập hàng</b><span>Bật quản lý theo lô, hạn sử dụng trên KiotViet. Hàng nào không nhập hạn thì trợ lý không báo hạn được.</span></div></div>
+  <div class="check"><span class="n">3</span><div><b>Bán hàng ghi đúng tên người bán</b><span>Mỗi nhân viên một tài khoản riêng, không dùng chung, để số liệu không bị lẫn.</span></div></div>
+  <div class="check"><span class="n">4</span><div><b>Đặt mức tối thiểu, tối đa cho mặt hàng</b><span>Đặt sẵn trên KiotViet (mục định mức tồn), hoặc gửi em một mức chung.</span></div></div>
+  <div class="check"><span class="n">5</span><div><b>Gửi chỉ tiêu từng nhân viên</b><span>Đầu mỗi tháng gửi một file Excel là được.</span></div></div>
+  <div class="check"><span class="n">6</span><div><b>Cài Telegram</b><span>Miễn phí, cho anh và những ai cần nhận báo cáo.</span></div></div>
+</section>
+
+<!-- 10. Questions & next steps -->
+<section class="page">
+  <div class="bar"><span>Trợ lý báo cáo bán hàng</span><span class="num">10 / 10</span></div>
+  <h2>Anh cho em biết thêm nhé</h2>
+  <p class="lead">Để em làm đúng ý anh ngay từ đầu:</p>
+  <ol class="qs">
+    <li>Có bao nhiêu nhà phân phối, mỗi nơi mấy kho?</li>
+    <li>Các nhà phân phối đã nhập hạn sử dụng chưa?</li>
+    <li>Còn bao nhiêu là “sắp hết”? Tồn bao nhiêu là “nhiều”?</li>
+    <li>Báo trước hạn sử dụng bao nhiêu ngày (30, 60, 90)?</li>
+    <li>Chỉ tiêu tính theo doanh thu hay số lượng hàng?</li>
+    <li>Nhận báo cáo lúc mấy giờ? Nhân viên có xem bảng xếp hạng không?</li>
+  </ol>
+  <h3>Các bước làm</h3>
+  <div class="road">
+    <div class="st"><b>BƯỚC 1</b>Chạy thử với 1 nhà phân phối</div>
+    <span class="to">›</span>
+    <div class="st"><b>BƯỚC 2</b>Chỉnh theo góp ý của anh</div>
+    <span class="to">›</span>
+    <div class="st"><b>BƯỚC 3</b>Mở cho tất cả nhà phân phối</div>
+  </div>
+  <div class="cost"><b>Chi phí duy trì:</b> Telegram miễn phí. Chỉ tốn tiền thuê một máy chạy liên tục 24/7 (máy chủ), khoảng vài trăm nghìn đồng mỗi tháng.</div>
+</section>
+
+<script>
+  // Flag any page whose content is taller than the page, so the build script can catch it.
+  var over = [];
+  document.querySelectorAll('.page').forEach(function (p, i) {
+    if (p.scrollHeight > p.clientHeight + 1) { over.push(i + 1); p.style.outline = '6px solid red'; }
+  });
+  document.body.setAttribute('data-overflow', over.join(',') || 'none');
+</script>
+</body>
+</html>

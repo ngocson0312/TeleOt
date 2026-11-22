@@ -1,0 +1,22 @@
+# Secrets: KiotViet client secrets, Telegram bot token
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local data
+*.db
+*.sqlite3
+logs/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
