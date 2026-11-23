@@ -46,6 +46,35 @@ def _box(svc: Services) -> SecretBox:
 # ---- tenants ------------------------------------------------------------------
 
 
+def _check_credentials(retailer: str, client_id: str, secret: str) -> None:
+    async def check():
+        async with KiotVietClient(retailer, client_id, secret) as c:
+            await c.fetch_token()
+    try:
+        asyncio.run(check())
+        print("✔ Đã lấy được token KiotViet.")
+    except KiotVietAuthError as e:
+        sys.exit(f"✘ {e}\nKhông lưu. Kiểm tra lại mã, hoặc thêm --no-check để bỏ qua bước này.")
+
+
+def cmd_tenant_key(args) -> None:
+    """The NPP changed its Client Secret on KiotViet: store the new one. The bot uses it on the next sync."""
+    svc = _services()
+    box = _box(svc)
+    t = svc.tenant(args.tenant_id) or sys.exit(f"Không có NPP id={args.tenant_id}")
+    client_id = args.client_id or input(f"Client ID [{t.client_id}]: ").strip() or t.client_id
+    secret = getpass.getpass("Client Secret mới (không hiện khi gõ): ").strip()
+    if not secret:
+        sys.exit("Chưa nhập Client Secret, không lưu.")
+    if not args.no_check:
+        _check_credentials(t.retailer, client_id, secret)
+    with svc.db.session() as db:
+        row = db.get(Tenant, t.id)
+        row.client_id = client_id
+        row.client_secret_enc = box.encrypt(secret)
+    print(f"Đã lưu mã mới cho {t.name}. Lần đồng bộ sau sẽ dùng mã này, không cần khởi động lại bot.")
+
+
 def cmd_tenant_add(args) -> None:
     svc = _services()
     box = _box(svc)
@@ -60,14 +89,7 @@ def cmd_tenant_add(args) -> None:
         client_id = args.client_id or input("Client ID: ").strip()
         secret = getpass.getpass("Client Secret (không hiện khi gõ): ").strip()
     if not args.no_check:
-        async def check():
-            async with KiotVietClient(retailer, client_id, secret) as c:
-                await c.fetch_token()
-        try:
-            asyncio.run(check())
-            print("✔ Đã lấy được token KiotViet.")
-        except KiotVietAuthError as e:
-            sys.exit(f"✘ {e}\nKhông lưu. Kiểm tra lại mã, hoặc thêm --no-check để bỏ qua bước này.")
+        _check_credentials(retailer, client_id, secret)
     with svc.db.session() as db:
         if db.scalar(select(Tenant).where(Tenant.retailer == retailer)):
             sys.exit(f"Gian hàng {retailer} đã có. Xem: python -m app.cli tenant-list")
@@ -375,6 +397,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(fn=cmd_tenant_add)
 
     sub.add_parser("tenant-list", help="danh sách NPP").set_defaults(fn=cmd_tenant_list)
+
+    a = sub.add_parser("tenant-key", help="NPP đổi Client Secret trên KiotViet: lưu mã mới")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("--client-id", help="mặc định giữ Client ID cũ")
+    a.add_argument("--no-check", action="store_true", help="không thử lấy token trước khi lưu")
+    a.set_defaults(fn=cmd_tenant_key)
 
     a = sub.add_parser("tenant-set", help="đổi cấu hình NPP, ví dụ: tenant-set 1 report_times 8:00,12:00,17:00")
     a.add_argument("tenant_id", type=int)

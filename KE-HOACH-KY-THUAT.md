@@ -186,7 +186,8 @@ sync_state(tenant_id, resource, last_modified)
 
 ## 10. Triển khai và vận hành
 
-- **Máy chủ:** VPS Linux nhỏ (1 vCPU, 1–2 GB RAM), chạy bằng Docker hoặc systemd, tự khởi động lại khi lỗi.
+- **Máy chủ:** VPS Linux nhỏ (1 vCPU, 1–2 GB RAM), chạy bằng systemd, tự khởi động lại khi lỗi. Chạy thử được trên máy Windows bằng Task Scheduler. Hướng dẫn: `CAI-DAT.md`, script trong `deploy/`.
+- **Một bản duy nhất:** bot khóa `data/bot.lock` khi chạy; bản thứ hai trên cùng máy thoát với mã 3. Hai máy cùng một token thì Telegram báo `Conflict`.
 - **Sao lưu:** CSDL mỗi ngày lúc 03:00, giữ 14 bản trong `data/backup/` (`BACKUP_DIR`, `BACKUP_KEEP`). Nên chép thêm ra ngoài VPS.
 - **Báo lỗi:** gửi tin vào nhóm của người vận hành khi đồng bộ lỗi nhiều lần liên tiếp. Xem nhanh bằng `/trangthai` hoặc `python -m app.cli status`.
 - **Webhook (giai đoạn 3):** cần domain và HTTPS (Caddy hoặc Nginx + Let's Encrypt).
@@ -216,7 +217,7 @@ sync_state(tenant_id, resource, last_modified)
 
 ```
 app/
-  main.py              khởi động bot + scheduler (python -m app.main)
+  main.py              khởi động bot + scheduler (python -m app.main), singleton.py: chặn chạy 2 bản
   cli.py               lệnh quản trị: probe, tenant-*, chat-* (chat-set), sync, report, send-report,
                        staff-check, top, targets-*, status, compare, backup
   probe.py             giai đoạn 0: kiểm tra các điểm chưa rõ ở mục 3 trên dữ liệu thật
@@ -236,6 +237,8 @@ app/
   db/                  models.py, session.py (tự thêm cột mới vào CSDL cũ, sao lưu SQLite)
 tests/                 test trên gian hàng KiotViet giả (tests/fakes.py), đối tượng Telegram giả (tests/tg.py)
 tai-lieu/              tài liệu gửi anh rể (PDF + ảnh + nguồn)
+deploy/                cài chạy 24/7: cai-dat-linux.sh + teleot.service, cai-dat-windows.ps1, chay-bot.ps1, dung-bot.ps1
+CAI-DAT.md             hướng dẫn cài đặt, sao lưu, xử lý sự cố
 .env.example
 requirements.txt, requirements-dev.txt
 ```

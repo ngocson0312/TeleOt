@@ -77,6 +77,23 @@ def test_cli_setup_flow(cli_env, capsys, monkeypatch):
     assert "topsecret" not in raw
 
 
+def test_cli_tenant_key_replaces_secret(cli_env, capsys, monkeypatch):
+    import sqlite3
+    cli.main(["tenant-add", "--name", "NPP Thử", "--from-env", "--no-check"])
+    monkeypatch.setattr("builtins.input", lambda prompt: "")  # keep the old Client ID
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "secret-moi")
+    cli.main(["tenant-key", "1", "--no-check"])
+    assert "Đã lưu mã mới cho NPP Thử" in capsys.readouterr().out
+    svc = cli._services()
+    t = svc.tenant(1)
+    assert t.client_id == "cid" and svc.box.decrypt(t.client_secret_enc) == "secret-moi"
+    raw = sqlite3.connect(cli_env / "cli.db").execute("select client_secret_enc from tenants").fetchone()[0]
+    assert "secret-moi" not in raw
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "")
+    with pytest.raises(SystemExit):
+        cli.main(["tenant-key", "1", "--no-check"])
+
+
 def test_cli_rejects_bad_settings(cli_env):
     cli.main(["tenant-add", "--name", "A", "--from-env", "--no-check"])
     with pytest.raises(SystemExit):

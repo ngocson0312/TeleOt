@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from functools import lru_cache
-from pathlib import Path
 from datetime import time
+from functools import lru_cache
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{(DATA_DIR / 'teleot.db').as_posix()}"
     admin_chat_id: int | None = None
     log_level: str = "INFO"
+    log_file: Path | None = None  # bot log to this file instead of the console (Windows service)
     max_parallel_syncs: int = 3  # NPPs syncing at the same time (SQLite writes one at a time anyway)
     backup_dir: Path = DATA_DIR / "backup"  # daily copy of the SQLite database
     backup_keep: int = 14  # number of daily copies kept
@@ -35,7 +37,7 @@ class Settings(BaseSettings):
     kiotviet_client_id: str = ""
     kiotviet_client_secret: SecretStr = SecretStr("")
 
-    @field_validator("admin_chat_id", mode="before")
+    @field_validator("admin_chat_id", "log_file", mode="before")
     @classmethod
     def _empty_is_none(cls, v):
         return None if v in ("", None) else v
@@ -178,14 +180,24 @@ class ChatSettings(BaseModel):
         return json.dumps({k: v for k, v in self.model_dump().items() if v != base[k]}, ensure_ascii=False)
 
 
-def setup_logging(level: str = "INFO") -> None:
+def log_handlers(log_file: Path | None) -> list[logging.Handler]:
+    """Console by default (systemd keeps it in the journal). With LOG_FILE: that file only,
+    a new one every midnight, 14 days kept (Windows has no journal)."""
+    if log_file is None:
+        return [logging.StreamHandler()]
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    return [TimedRotatingFileHandler(log_file, when="midnight", backupCount=14, encoding="utf-8")]
+
+
+def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
     # Vietnamese text on a Windows console / pipe that is not UTF-8.
     for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
+        if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     logging.basicConfig(
         level=level.upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=log_handlers(log_file),
     )
     # httpx logs every URL at INFO. Telegram URLs contain the bot token.
     logging.getLogger("httpx").setLevel(logging.WARNING)
