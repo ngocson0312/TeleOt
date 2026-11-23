@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from app.reports.alerts import KINDS, AlertItem
 from app.reports.inventory import ExpiryRow, InventoryReport, ProductDetail, StockRow
 from app.textutil import esc, fmt_qty
 
@@ -48,10 +49,14 @@ def _rate(r: StockRow) -> str:
     return f", bán ~{fmt_qty(round(r.avg_daily, 1))}/ngày" if r.avg_daily > 0 else ""
 
 
-def stock_line(i: int, r: StockRow, multi_branch: bool) -> str:
+def stock_text(r: StockRow, multi_branch: bool) -> str:
     where = f" · {esc(r.branch_name)}" if multi_branch else ""
-    return (f"{i}. <b>{esc(r.name)}</b> ({esc(r.code)}): còn {fmt_qty(r.on_hand)}{_unit(r.unit)}"
+    return (f"<b>{esc(r.name)}</b> ({esc(r.code)}): còn {fmt_qty(r.on_hand)}{_unit(r.unit)}"
             f"{_rate(r)}. {esc(r.reason)}{where}")
+
+
+def stock_line(i: int, r: StockRow, multi_branch: bool) -> str:
+    return f"{i}. {stock_text(r, multi_branch)}"
 
 
 def _days_text(days_left: int) -> str:
@@ -125,6 +130,36 @@ def format_inventory_report(report: InventoryReport, now: datetime) -> tuple[lis
     if truncated:
         out += ["", "📎 Danh sách đầy đủ trong file Excel gửi kèm."]
     return split_message("\n".join(out)), truncated
+
+
+URGENT_TITLE = {"out": "🚫 Hết hàng", "low": "🔻 Sắp hết hàng", "expired": "⛔ Lô đã hết hạn, còn tồn",
+                "red": "🔴 Lô hết hạn trong {red} ngày"}
+MAX_URGENT = 20
+
+
+def alert_line(a: AlertItem, multi_branch: bool) -> str:
+    if isinstance(a.row, StockRow):
+        return f"• {stock_text(a.row, multi_branch)}"
+    return expiry_line(a.row, multi_branch)
+
+
+def format_urgent(tenant_name: str, items: list[AlertItem], multi_branch: bool, red_days: int,
+                  now: datetime) -> list[str]:
+    """5.4: only what is new since the last check."""
+    out = [f"⚡ <b>Cảnh báo mới · {esc(tenant_name)}</b> · {now:%H:%M %d/%m}"]
+    shown = 0
+    for kind in KINDS:
+        group = [a for a in items if a.kind == kind]
+        if not group or shown >= MAX_URGENT:
+            continue
+        out += ["", f"<b>{URGENT_TITLE[kind].format(red=red_days)}: {len(group)}</b>"]
+        for a in group[: MAX_URGENT - shown]:
+            out.append(alert_line(a, multi_branch))
+            shown += 1
+    if len(items) > shown:
+        out.append(f"… và {len(items) - shown} cảnh báo khác.")
+    out += ["", "Gõ /baocao để xem báo cáo đầy đủ."]
+    return split_message("\n".join(out))
 
 
 def format_expiring(tenant_name: str, rows: list[ExpiryRow], days: int, red: int, multi: bool,

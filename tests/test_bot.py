@@ -111,14 +111,16 @@ def test_owner_sees_every_npp(svc, synced):
     assert [t.id for t in svc.scope_for_chat(OWNER)] == [synced]
 
 
-def test_scheduled_report_goes_to_group_and_owner(svc, synced):
+def test_scheduled_report_goes_to_npp_group_only(svc, synced):
+    """The owner group gets one summary of every NPP instead (summary_job)."""
     from app.scheduler import report_job
 
     bot = FakeBot()
     ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": svc}), bot=bot,
                           job=SimpleNamespace(data=synced))
     run(report_job(ctx))
-    assert sorted({c for c, _ in bot.sent}) == sorted([GROUP, OWNER])
+    assert {c for c, _ in bot.sent} == {GROUP}
+    assert svc.report_recipients(synced) == [GROUP]
 
 
 def test_operator_alert_after_three_failures_and_recovery(svc, synced):
@@ -145,8 +147,9 @@ def test_schedule_registers_jobs(svc, db, synced):
         t.settings_json = TenantSettings(report_times=["07:30", "18:00"]).to_json()
     app = Application.builder().token("123:TEST").build()
     names = schedule_jobs(app, svc)
-    assert names == [f"sync:{synced}", f"report:{synced}:07:30", f"report:{synced}:18:00",
-                     f"ranking:{synced}:18:00", "maintenance"]
+    assert names == [f"sync:{synced}:15m", f"report:{synced}:07:30", f"report:{synced}:18:00",
+                     f"ranking:{synced}:18:00", f"summary:{OWNER}:08:00", f"compare:{OWNER}:18:30"]
+    assert {j.name for j in app.job_queue.jobs()} == set(names) | {"maintenance", "reconcile"}
 
 
 @pytest.mark.parametrize("text,intent", [

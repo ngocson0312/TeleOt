@@ -1,5 +1,6 @@
 """Free-text messages -> the same actions as the commands:
-"tồn bánh quy", "hết hạn 60", "báo cáo", "top hôm nay", "doanh thu Lan tuần này", "Tuấn tháng 11".
+"tồn bánh quy", "hết hạn 60", "báo cáo", "top hôm nay", "doanh thu Lan tuần này", "Tuấn tháng 11",
+"so sánh tháng này", "trạng thái".
 
 Anything else is ignored, so the bot stays quiet in a busy group.
 """
@@ -16,7 +17,7 @@ from app.timeutil import today_local
 
 @dataclass
 class Intent:
-    kind: str  # ton | hethan | baocao | help | top | nv | maybe_nv
+    kind: str  # ton | hethan | baocao | help | top | nv | maybe_nv | sosanh | trangthai
     arg: str | int | None = None
 
 
@@ -24,6 +25,7 @@ _HETHAN = re.compile(r"^(?:sap )?het ?han(?:\s+(\d{1,3}))?(?:\s*ngay)?$")
 _TON_PREFIXES = (("ton", "kho"), ("ton",), ("tra", "ton"), ("xem", "ton"))
 _TOP_PREFIXES = (("bang", "xep", "hang"), ("xep", "hang"), ("top",))
 _NV_PREFIXES = (("doanh", "thu"), ("doanh", "so"), ("nhan", "vien"), ("nv",))
+_SOSANH_PREFIXES = (("so", "sanh", "npp"), ("so", "sanh"))
 MAX_NAME_WORDS = 4  # "<tên> <kỳ>" without a keyword: only short messages
 
 
@@ -38,6 +40,8 @@ def parse_free_text(text: str, today: date | None = None) -> Intent | None:
         return Intent("baocao")
     if norm in ("help", "huong dan", "tro giup", "giup"):
         return Intent("help")
+    if norm in ("trang thai", "tinh trang dong bo", "trang thai dong bo"):
+        return Intent("trangthai")
     m = _HETHAN.match(norm)
     if m:
         return Intent("hethan", int(m.group(1)) if m.group(1) else None)
@@ -47,6 +51,13 @@ def parse_free_text(text: str, today: date | None = None) -> Intent | None:
         if tuple(norm_words[:n]) == prefix and len(norm_words) > n:
             return Intent("ton", " ".join(words[n:]))
     today = today or today_local()
+    for prefix in _SOSANH_PREFIXES:
+        n = len(prefix)
+        if tuple(norm_words[:n]) == prefix:
+            rest = " ".join(words[n:])
+            if not rest or parse_period(rest, today):
+                return Intent("sosanh", rest)
+            return None
     for prefix in _TOP_PREFIXES:
         n = len(prefix)
         if tuple(norm_words[:n]) == prefix:

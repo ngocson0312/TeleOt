@@ -32,6 +32,7 @@ class Chat(Base):
     tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="tenant")  # tenant | owner
     title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    settings_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # ChatSettings, only non-defaults
 
 
 class Branch(Base):
@@ -192,3 +193,17 @@ class SyncState(Base):
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     alerted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AlertState(Base):
+    """5.4: one row per item that is (or recently was) over an urgent threshold.
+    key = kind:product:branch[:batch]; kind = out | low | expired | red."""
+
+    __tablename__ = "alert_state"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(400), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)  # still over the threshold at the last check
+    first_seen: Mapped[datetime] = mapped_column(DateTime)
+    last_seen: Mapped[datetime] = mapped_column(DateTime)
+    last_sent: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # None = not told yet

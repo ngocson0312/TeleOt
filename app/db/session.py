@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, inspect, text
@@ -41,6 +43,27 @@ class Database:
                         raise RuntimeError(f"Cột mới {table.name}.{col.name} phải cho phép NULL")
                     col_type = col.type.compile(self.engine.dialect)
                     conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}'))
+
+    def backup(self, dest_dir: Path, keep: int, today: date) -> Path | None:
+        """Copy the SQLite database (safe while the bot runs) and keep the last `keep` copies.
+        Other databases: None, back them up with their own tools."""
+        url = self.engine.url
+        if url.get_backend_name() != "sqlite" or url.database in (None, "", ":memory:"):
+            return None
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"teleot-{today:%Y%m%d}.db"
+        raw = self.engine.raw_connection()
+        try:
+            target = sqlite3.connect(dest)
+            try:
+                raw.driver_connection.backup(target)
+            finally:
+                target.close()
+        finally:
+            raw.close()
+        for old in sorted(dest_dir.glob("teleot-*.db"))[:-max(keep, 1)]:
+            old.unlink()
+        return dest
 
     @contextmanager
     def session(self) -> Iterator[Session]:

@@ -163,7 +163,8 @@ def test_daily_ranking_job(svc, synced, db):
     bot = FakeBot()
     ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": svc}), bot=bot, job=SimpleNamespace(data=synced))
     run(ranking_job(ctx))
-    assert sorted({c for c, _ in bot.sent}) == sorted([GROUP, OWNER])
+    # the owner group sees the top sellers in its daily comparison instead
+    assert {c for c, _ in bot.sent} == {GROUP}
     text = bot.sent[0][1]
     assert "🏆 <b>Xếp hạng cuối ngày · hôm nay 23/11/2026</b>" in text
     assert "🐢 <b>Chậm tiến độ tháng 11/2026</b> (tiến độ tháng 77%)" in text

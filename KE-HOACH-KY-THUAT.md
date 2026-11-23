@@ -104,6 +104,13 @@ Tài liệu chưa rõ hoặc tự mâu thuẫn ở các điểm sau:
 ### 5.4 Chống spam
 - **Báo cáo theo lịch** (ví dụ 8h, 12h, 17h): bản tóm tắt đầy đủ.
 - **Cảnh báo gấp:** chỉ gửi khi mặt hàng *mới* vượt ngưỡng kể từ lần trước (lưu trong bảng `alert_state`), không nhắc lại mỗi giờ.
+  - Quét sau mỗi lần đồng bộ (15 phút).
+  - Gồm: hết hàng, sắp hết hàng, lô đã hết hạn còn tồn, lô còn ≤ `expiry_red_days` ngày. Tồn nhiều không gấp.
+  - Lần quét đầu chỉ ghi nhớ, không gửi.
+  - Giờ im lặng (mặc định 21:00–07:00): cảnh báo chờ đến sáng.
+  - Hết vấn đề rồi lại có vấn đề trong 24 giờ: không gửi lại.
+  - Báo cáo theo lịch vừa gửi thì coi như đã báo.
+  - Webhook `stock.update` chưa làm: cần domain + HTTPS, chỉ đáng làm nếu 15 phút là chậm.
 - **Tin nhắn dài:** Telegram giới hạn 4.096 ký tự mỗi tin, nên chỉ hiện top N, phần còn lại đưa vào file Excel đính kèm.
 
 ### 5.5 Doanh thu nhân viên
@@ -144,12 +151,19 @@ Tài liệu chưa rõ hoặc tự mâu thuẫn ở các điểm sau:
 - Bảng `tenants`: mỗi NPP có `retailer`, `client_id`, `client_secret` (mã hóa) và cấu hình riêng (ngưỡng, giờ gửi).
 - Bảng `chats`: mỗi `chat_id` gắn với **một NPP** (chỉ thấy NPP đó) hoặc vai trò **owner** (thấy tất cả, có thêm lệnh so sánh NPP).
 - Bot bỏ qua mọi chat không có trong danh sách.
+- Mỗi chat có cấu hình nhận gì (`chats.settings_json`, lệnh `chat-set`). Nhóm tổng mặc định nhận:
+  - tóm tắt tồn kho mọi NPP lúc 08:00;
+  - so sánh NPP lúc 18:30.
+
+  Nhóm tổng mặc định không nhận báo cáo đầy đủ, cảnh báo gấp hay xếp hạng của từng NPP, để tránh spam khi có nhiều NPP.
+- Lịch chạy tự đối chiếu với CSDL mỗi 5 phút: thêm / tạm dừng NPP, đổi giờ gửi không cần khởi động lại.
+- Đồng bộ tối đa 3 NPP cùng lúc (`MAX_PARALLEL_SYNCS`), lần đồng bộ đầu của các NPP cách nhau 20 giây.
 
 ## 8. Mô hình dữ liệu (rút gọn)
 
 ```
 tenants(id, name, retailer, client_id, client_secret_enc, settings_json)
-chats(chat_id, tenant_id | NULL, role)                  -- role: tenant | owner
+chats(chat_id, tenant_id | NULL, role, settings_json)   -- role: tenant | owner
 branches(id, tenant_id, name)
 staff(id, tenant_id, user_name, given_name)
 products(id, tenant_id, code, name, unit, category, is_batch_expire)
@@ -159,7 +173,7 @@ invoices(id, tenant_id, branch_id, sold_by_id, customer_id, purchase_date, statu
 invoice_lines(invoice_id, product_id, quantity, price, discount)
 returns(id, tenant_id, invoice_id, return_date, total) + return_lines
 targets(tenant_id, staff_id, month, kind, product_id, value)
-alert_state(tenant_id, product_id, branch_id, kind, first_seen, last_sent)
+alert_state(tenant_id, key, kind, active, first_seen, last_seen, last_sent)  -- key = kind:hàng:kho[:lô]
 sync_state(tenant_id, resource, last_modified)
 ```
 
@@ -173,8 +187,8 @@ sync_state(tenant_id, resource, last_modified)
 ## 10. Triển khai và vận hành
 
 - **Máy chủ:** VPS Linux nhỏ (1 vCPU, 1–2 GB RAM), chạy bằng Docker hoặc systemd, tự khởi động lại khi lỗi.
-- **Sao lưu:** CSDL mỗi ngày.
-- **Báo lỗi:** gửi tin vào nhóm của người vận hành khi đồng bộ lỗi nhiều lần liên tiếp.
+- **Sao lưu:** CSDL mỗi ngày lúc 03:00, giữ 14 bản trong `data/backup/` (`BACKUP_DIR`, `BACKUP_KEEP`). Nên chép thêm ra ngoài VPS.
+- **Báo lỗi:** gửi tin vào nhóm của người vận hành khi đồng bộ lỗi nhiều lần liên tiếp. Xem nhanh bằng `/trangthai` hoặc `python -m app.cli status`.
 - **Webhook (giai đoạn 3):** cần domain và HTTPS (Caddy hoặc Nginx + Let's Encrypt).
 
 ## 11. Lộ trình
@@ -203,20 +217,23 @@ sync_state(tenant_id, resource, last_modified)
 ```
 app/
   main.py              khởi động bot + scheduler (python -m app.main)
-  cli.py               lệnh quản trị: probe, tenant-*, chat-*, sync, report, send-report
+  cli.py               lệnh quản trị: probe, tenant-*, chat-* (chat-set), sync, report, send-report,
+                       staff-check, top, targets-*, status, compare, backup
   probe.py             giai đoạn 0: kiểm tra các điểm chưa rõ ở mục 3 trên dữ liệu thật
   config.py            cấu hình từ .env + cấu hình riêng từng NPP (ngưỡng, giờ gửi)
   services.py          đồng bộ, gửi báo cáo, báo lỗi cho người vận hành
-  scheduler.py         lịch chạy (JobQueue của python-telegram-bot, dựa trên APScheduler)
+  scheduler.py         lịch chạy (JobQueue của python-telegram-bot, dựa trên APScheduler), tự đối chiếu CSDL mỗi 5 phút
   crypto.py            mã hóa client secret (Fernet)
   kiotviet/client.py   token, phân trang, retry, chỉ GET
   sync/                products.py (chi nhánh, hàng, tồn, lô), invoices.py, returns.py, staff.py,
                        runner.py, parse.py
   reports/             inventory.py (3 loại báo cáo tồn kho + tra cứu), excel.py,
                        staff.py (doanh thu, chỉ tiêu, xếp hạng), periods.py (kỳ: hôm nay, tháng 11...),
-                       targets.py (đọc / tạo file Excel chỉ tiêu)
-  bot/                 handlers.py, text_parse.py, formatting.py (tồn kho), staff_format.py (nhân viên)
-  db/                  models.py, session.py (tự thêm cột mới vào CSDL cũ)
+                       targets.py (đọc / tạo file Excel chỉ tiêu), alerts.py (cảnh báo gấp),
+                       compare.py (so sánh NPP), status.py (tình trạng đồng bộ)
+  bot/                 handlers.py, text_parse.py, formatting.py (tồn kho, cảnh báo gấp),
+                       staff_format.py (nhân viên), owner_format.py (nhóm tổng)
+  db/                  models.py, session.py (tự thêm cột mới vào CSDL cũ, sao lưu SQLite)
 tests/                 test trên gian hàng KiotViet giả (tests/fakes.py), đối tượng Telegram giả (tests/tg.py)
 tai-lieu/              tài liệu gửi anh rể (PDF + ảnh + nguồn)
 .env.example

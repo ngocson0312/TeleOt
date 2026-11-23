@@ -14,7 +14,7 @@ from sqlalchemy import select
 from telegram import Bot
 
 from app.bot.formatting import format_inventory_report
-from app.config import DATA_DIR, TenantSettings, get_settings, setup_logging
+from app.config import DATA_DIR, ChatSettings, TenantSettings, get_settings, setup_logging
 from app.crypto import CryptoError, SecretBox, generate_key
 from app.db.models import Chat, Tenant
 from app.db.session import Database
@@ -95,7 +95,7 @@ def _parse_value(raw: str, key: str = ""):
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        if key == "report_times" and re.fullmatch(r"\d{1,2}:\d{2}(,\d{1,2}:\d{2})*", raw):  # 8:00,12:00
+        if key in ("report_times", "summary_times") and re.fullmatch(r"\d{1,2}:\d{2}(,\d{1,2}:\d{2})*", raw):  # 8:00,12:00
             return [f"{int(t.split(':')[0]):02d}:{t.split(':')[1]}" for t in raw.split(",")]
         return raw
 
@@ -121,7 +121,7 @@ def cmd_tenant_set(args) -> None:
         except ValueError as e:
             sys.exit(f"Giá trị không hợp lệ: {e}")
         t.settings_json = new.to_json()
-        print(f"Đã lưu {args.key} = {getattr(new, args.key)!r}. Khởi động lại bot nếu đổi giờ gửi.")
+        print(f"Đã lưu {args.key} = {getattr(new, args.key)!r}. Bot đang chạy sẽ tự cập nhật lịch trong 5 phút.")
 
 
 # ---- chats --------------------------------------------------------------------
@@ -140,6 +140,18 @@ def cmd_chat_add(args) -> None:
         chat.title = args.title
         db.add(chat)
     print(f"Đã cấp quyền chat {args.chat_id}: " + ("nhóm tổng, xem tất cả NPP" if args.owner else f"NPP id={args.tenant}"))
+    print("   nhận: " + _describe_chat(ChatSettings.for_chat("owner" if args.owner else "tenant", None)))
+    print(f"   đổi bằng: python -m app.cli chat-set {args.chat_id} <khóa> <giá trị>")
+
+
+def _describe_chat(cs: ChatSettings) -> str:
+    inventory = {"full": "báo cáo tồn kho đầy đủ của từng NPP",
+                 "summary": f"tóm tắt tồn kho lúc {', '.join(cs.summary_times)}",
+                 "off": "không nhận báo cáo tồn kho"}[cs.inventory]
+    ranking = {None: "xếp hạng: tự động", True: "xếp hạng: có", False: "xếp hạng: không"}[cs.ranking]
+    urgent = "cảnh báo gấp: " + ("có" if cs.urgent else "không")
+    compare = f"so sánh NPP lúc {cs.compare_time}" if cs.compare_time else "so sánh NPP: tắt"
+    return " · ".join([inventory, ranking, urgent, compare])
 
 
 def cmd_chat_list(args) -> None:
@@ -151,6 +163,27 @@ def cmd_chat_list(args) -> None:
         for c in chats:
             scope = "nhóm tổng (tất cả NPP)" if c.role == "owner" else f"NPP id={c.tenant_id}"
             print(f"{c.chat_id} · {scope}" + (f" · {c.title}" if c.title else ""))
+            print(f"   {_describe_chat(ChatSettings.for_chat(c.role, c.settings_json))}")
+
+
+def cmd_chat_set(args) -> None:
+    svc = _services()
+    with svc.db.session() as db:
+        chat = db.get(Chat, args.chat_id) or sys.exit("Không có chat này. Thêm bằng: python -m app.cli chat-add")
+        if args.key not in ChatSettings.model_fields:
+            sys.exit("Khóa không hợp lệ. Dùng một trong: " + ", ".join(ChatSettings.model_fields))
+        data = ChatSettings.for_chat(chat.role, chat.settings_json).model_dump()
+        value = _parse_value(args.value, args.key)
+        if args.key == "ranking" and value in ("auto", "tu dong", None):
+            value = None
+        data[args.key] = value
+        try:
+            new = ChatSettings.model_validate(data)
+        except ValueError as e:
+            sys.exit(f"Giá trị không hợp lệ: {e}")
+        chat.settings_json = new.to_json(chat.role)
+        print(f"Đã lưu {args.key} = {getattr(new, args.key)!r}. Bot đang chạy sẽ tự cập nhật lịch trong 5 phút.")
+        print("   nhận: " + _describe_chat(new))
 
 
 def cmd_chat_remove(args) -> None:
@@ -197,9 +230,9 @@ def cmd_report(args) -> None:
 def cmd_send_report(args) -> None:
     svc = _services()
     token = svc.settings.telegram_bot_token.get_secret_value() or sys.exit("Thiếu TELEGRAM_BOT_TOKEN")
-    chats = svc.recipients(args.tenant_id)
+    chats = svc.report_recipients(args.tenant_id)
     if not chats:
-        sys.exit("NPP này chưa có chat nào nhận báo cáo. Thêm bằng: python -m app.cli chat-add")
+        sys.exit("NPP này chưa có chat nào nhận báo cáo đầy đủ. Thêm bằng: python -m app.cli chat-add")
 
     async def go():
         async with Bot(token) as bot:
@@ -300,6 +333,28 @@ def cmd_targets_import(args) -> None:
         sys.exit(1)
 
 
+# ---- phase 3 ------------------------------------------------------------------
+
+
+def cmd_status(args) -> None:
+    svc = _services()
+    for m in svc.status_messages(svc.all_tenants()):
+        print(_strip_html(m))
+
+
+def cmd_compare(args) -> None:
+    svc = _services()
+    tenants = svc.active_tenants() or sys.exit("Chưa có NPP nào đang chạy")
+    for m in svc.comparison_messages(tenants, _period(args.period)):
+        print(_strip_html(m))
+
+
+def cmd_backup(args) -> None:
+    svc = _services()
+    path = svc.backup()
+    print(f"Đã sao lưu: {path}" if path else "CSDL không phải SQLite: sao lưu bằng công cụ của CSDL đó.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="Quản trị bot báo cáo KiotViet → Telegram")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -335,6 +390,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(fn=cmd_chat_add)
 
     sub.add_parser("chat-list", help="danh sách chat được cấp quyền").set_defaults(fn=cmd_chat_list)
+
+    a = sub.add_parser("chat-set", help="chat nhận gì: chat-set <mã chat> inventory full|summary|off, "
+                                       "summary_times 8:00,17:00, ranking true|false|auto, urgent true|false, "
+                                       "compare_time 18:30|off")
+    a.add_argument("chat_id", type=int)
+    a.add_argument("key")
+    a.add_argument("value")
+    a.set_defaults(fn=cmd_chat_set)
 
     a = sub.add_parser("chat-remove", help="bỏ quyền một chat")
     a.add_argument("chat_id", type=int)
@@ -374,6 +437,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("tenant_id", type=int)
     a.add_argument("file")
     a.set_defaults(fn=cmd_targets_import)
+
+    sub.add_parser("status", help="tình trạng đồng bộ từng NPP").set_defaults(fn=cmd_status)
+
+    a = sub.add_parser("compare", help="so sánh các NPP đang chạy")
+    a.add_argument("period", nargs="?", default="hôm nay")
+    a.set_defaults(fn=cmd_compare)
+
+    sub.add_parser("backup", help="sao lưu CSDL ngay (bot tự sao lưu lúc 03:00 mỗi ngày)").set_defaults(fn=cmd_backup)
     return p
 
 

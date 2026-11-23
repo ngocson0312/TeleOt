@@ -42,6 +42,23 @@ class Period:
         d = self.start - timedelta(days=1)
         return Period(d, d, "hôm trước")
 
+    def previous(self) -> "Period":
+        """What to compare with: the day before; the same days of last month for a month
+        (or month to date); otherwise the span of the same length just before."""
+        if self.single_day:
+            return self.previous_day()
+        first, last = month_bounds(self.start.year, self.start.month)
+        if self.start == first and self.month:
+            prev_last = first - timedelta(days=1)
+            prev_first = prev_last.replace(day=1)
+            if self.end == last:
+                return Period(prev_first, prev_last, f"tháng {prev_first.month}/{prev_first.year}")
+            end = min(prev_first + timedelta(days=self.end.day - 1), prev_last)
+            return Period(prev_first, end, f"cùng kỳ tháng {prev_first.month}")
+        span = (self.end - self.start).days + 1
+        end = self.start - timedelta(days=1)
+        return Period(end - timedelta(days=span - 1), end, "kỳ trước")
+
 
 def month_bounds(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])

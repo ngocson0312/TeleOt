@@ -6,7 +6,8 @@ import logging
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from datetime import time
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{(DATA_DIR / 'teleot.db').as_posix()}"
     admin_chat_id: int | None = None
     log_level: str = "INFO"
+    max_parallel_syncs: int = 3  # NPPs syncing at the same time (SQLite writes one at a time anyway)
+    backup_dir: Path = DATA_DIR / "backup"  # daily copy of the SQLite database
+    backup_keep: int = 14  # number of daily copies kept
 
     # Phase 0 probe only.
     kiotviet_retailer: str = ""
@@ -49,11 +53,36 @@ def _check_hhmm(t: str) -> str:
     return f"{int(h):02d}:{m}"
 
 
+def _off_or_hhmm(v: str | None) -> str | None:
+    if v in (None, "", "off", "tat"):
+        return None
+    return _check_hhmm(v)
+
+
+def parse_window(window: str) -> tuple[time, time]:
+    """'21:00-07:00' -> (21:00, 07:00)."""
+    start, sep, end = window.replace(" ", "").partition("-")
+    if not sep:
+        raise ValueError(f"Khung giờ không hợp lệ: {window!r} (dạng 21:00-07:00)")
+    a, b = _check_hhmm(start), _check_hhmm(end)
+    return time(int(a[:2]), int(a[3:])), time(int(b[:2]), int(b[3:]))
+
+
+def in_window(window: str | None, t: time) -> bool:
+    """Is t inside the window? Windows may wrap midnight (21:00-07:00)."""
+    if not window:
+        return False
+    start, end = parse_window(window)
+    if start <= end:
+        return start <= t < end
+    return t >= start or t < end
+
+
 class TenantSettings(BaseModel):
     """Thresholds and schedule for one NPP. Defaults until the owner answers the questions."""
 
     report_times: list[str] = Field(default_factory=lambda: ["08:00", "12:00", "17:00"])
-    sync_interval_minutes: int = 30
+    sync_interval_minutes: int = 15  # also how often urgent alerts are checked
 
     # 5.2 Sắp hết hạn
     expiry_warn_days: int = 30
@@ -81,6 +110,11 @@ class TenantSettings(BaseModel):
     skip_sundays: bool = False  # month pace counts working days only
     behind_margin: float = 10  # "chậm tiến độ" when % đạt < tiến độ - this many points
 
+    # 5.4 Cảnh báo gấp (phase 3): checked after every sync, only items that are newly over a threshold
+    urgent_alerts: bool = True
+    quiet_hours: str | None = "21:00-07:00"  # alerts found then wait until the window ends
+    alert_cooldown_hours: float = 24  # item back to normal then bad again within this time: no new alert
+
     @field_validator("report_times")
     @classmethod
     def _check_times(cls, v: list[str]) -> list[str]:
@@ -91,9 +125,15 @@ class TenantSettings(BaseModel):
     @field_validator("ranking_time")
     @classmethod
     def _check_ranking_time(cls, v: str | None) -> str | None:
+        return _off_or_hhmm(v)
+
+    @field_validator("quiet_hours")
+    @classmethod
+    def _check_quiet(cls, v: str | None) -> str | None:
         if v in (None, "", "off", "tat"):
             return None
-        return _check_hhmm(v)
+        a, b = parse_window(v)
+        return f"{a:%H:%M}-{b:%H:%M}"
 
     @classmethod
     def from_json(cls, raw: str | None) -> "TenantSettings":
@@ -101,6 +141,41 @@ class TenantSettings(BaseModel):
 
     def to_json(self) -> str:
         return self.model_dump_json(exclude_defaults=True)
+
+
+class ChatSettings(BaseModel):
+    """What one Telegram chat receives on schedule. Defaults depend on the chat's role:
+    an NPP group gets everything of its NPP; the owner group gets one summary for all NPPs
+    instead of every NPP's full report."""
+
+    inventory: Literal["full", "summary", "off"] = "full"  # scheduled inventory reports
+    summary_times: list[str] = Field(default_factory=lambda: ["08:00"])  # when inventory = summary
+    ranking: bool | None = None  # None: NPP groups yes; owner groups only for NPPs whose groups don't get it
+    urgent: bool = True  # urgent alerts
+    compare_time: str | None = None  # daily NPP comparison
+
+    ROLE_DEFAULTS: ClassVar[dict[str, dict]] = {
+        "owner": {"inventory": "summary", "urgent": False, "compare_time": "18:30"},
+    }
+
+    @field_validator("summary_times")
+    @classmethod
+    def _check_times(cls, v: list[str]) -> list[str]:
+        return [_check_hhmm(t) for t in v]
+
+    @field_validator("compare_time")
+    @classmethod
+    def _check_compare(cls, v: str | None) -> str | None:
+        return _off_or_hhmm(v)
+
+    @classmethod
+    def for_chat(cls, role: str, raw: str | None) -> "ChatSettings":
+        return cls.model_validate({**cls.ROLE_DEFAULTS.get(role, {}), **json.loads(raw or "{}")})
+
+    def to_json(self, role: str) -> str:
+        """Only what differs from the role's defaults."""
+        base = ChatSettings.for_chat(role, None).model_dump()
+        return json.dumps({k: v for k, v in self.model_dump().items() if v != base[k]}, ensure_ascii=False)
 
 
 def setup_logging(level: str = "INFO") -> None:

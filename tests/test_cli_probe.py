@@ -127,3 +127,39 @@ def test_cli_staff_commands(cli_env, capsys, monkeypatch):
     assert "ranking_time = None" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["tenant-set", "1", "revenue_mode", "abc"])
+
+
+def test_cli_owner_group_and_operations(cli_env, capsys, monkeypatch):
+    shop = FakeShop()
+    real_init = cli.Services.__init__
+    monkeypatch.setattr(cli.Services, "__init__",
+                        lambda self, settings, db, http_factory=None: real_init(self, settings, db, shop.http))
+    monkeypatch.setattr("app.services.now_local", lambda: NOW)
+    monkeypatch.setattr("app.sync.runner.now_local", lambda: NOW)
+    monkeypatch.setenv("BACKUP_DIR", str(cli_env / "sao-luu"))
+    get_settings.cache_clear()
+    cli.main(["tenant-add", "--name", "NPP Thử", "--from-env", "--no-check"])
+    cli.main(["sync", "1"])
+    cli.main(["chat-add", "-100777", "--owner"])
+    out = capsys.readouterr().out
+    assert "nhận: tóm tắt tồn kho lúc 08:00 · xếp hạng: tự động · cảnh báo gấp: không · so sánh NPP lúc 18:30" in out
+
+    cli.main(["chat-set", "-100777", "summary_times", "7:00,17:30"])
+    cli.main(["chat-set", "-100777", "urgent", "true"])
+    cli.main(["chat-set", "-100777", "compare_time", "off"])
+    cli.main(["chat-set", "-100777", "ranking", "auto"])
+    cli.main(["chat-list"])
+    out = capsys.readouterr().out
+    assert "summary_times = ['07:00', '17:30']" in out and "compare_time = None" in out
+    assert "tóm tắt tồn kho lúc 07:00, 17:30 · xếp hạng: tự động · cảnh báo gấp: có · so sánh NPP: tắt" in out
+    for bad in (["inventory", "het"], ["khong_co", "1"], ["compare_time", "25:00"]):
+        with pytest.raises(SystemExit):
+            cli.main(["chat-set", "-100777", *bad])
+
+    cli.main(["status"])
+    cli.main(["compare", "hôm nay"])
+    cli.main(["backup"])
+    out = capsys.readouterr().out
+    assert "✅ NPP Thử (id 1): đồng bộ lúc 08:00 23/11" in out
+    assert "So sánh NPP · hôm nay 23/11" in out and "<b>" not in out
+    assert "Đã sao lưu:" in out and len(list((cli_env / "sao-luu").glob("teleot-*.db"))) == 1

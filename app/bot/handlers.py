@@ -1,4 +1,5 @@
-"""Telegram commands (section 6 of the plan): /ton, /hethan, /baocao, /nv, /top, /chitieu, /help, /id."""
+"""Telegram commands (section 6 of the plan): /ton, /hethan, /baocao, /nv, /top, /chitieu, /help, /id,
+and for the owner group (phase 3): /sosanh, /trangthai, an NPP name in /baocao, /hethan, /top."""
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ from telegram.ext import (
 )
 
 from app.bot.formatting import HELP_TEXT, format_expiring, format_product_detail
+from app.bot.owner_format import OWNER_HELP
 from app.bot.staff_format import STAFF_HELP
 from app.bot.text_parse import parse_free_text
 from app.db.models import Tenant
@@ -43,6 +45,8 @@ COMMANDS = [
     BotCommand("nv", "Thống kê nhân viên: /nv Tuấn tháng 11"),
     BotCommand("top", "Xếp hạng nhân viên: /top hôm nay"),
     BotCommand("chitieu", "Nạp chỉ tiêu tháng từ file Excel"),
+    BotCommand("sosanh", "So sánh các NPP: /sosanh tháng này"),
+    BotCommand("trangthai", "Tình trạng đồng bộ KiotViet"),
     BotCommand("help", "Hướng dẫn"),
     BotCommand("id", "Xem mã chat"),
 ]
@@ -81,6 +85,33 @@ async def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return member.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR)
 
 
+def pick_tenants(tenants: list[Tenant], text: str) -> tuple[list[Tenant], str]:
+    """'Hà Nội tháng 11' in a chat that sees several NPPs -> ([NPP Hà Nội], 'tháng 11').
+    The NPP name must open the text, with or without the word "NPP". No match: all NPPs."""
+    words = text.split()
+    if len(tenants) < 2 or not words:
+        return tenants, text.strip()
+    norm = [unaccent(w) for w in words]
+    best_len, best = 0, []
+    for t in tenants:
+        name = unaccent(t.name).split()
+        variants = [name] + ([name[1:]] if len(name) > 1 and name[0] == "npp" else [])
+        for v in variants:
+            n = len(v)
+            if n and norm[:n] == v:
+                if n > best_len:
+                    best_len, best = n, [t]
+                elif n == best_len and t not in best:
+                    best.append(t)
+    if not best:
+        return tenants, text.strip()
+    return best, " ".join(words[best_len:])
+
+
+def _npp_list(tenants: list[Tenant]) -> str:
+    return ", ".join(esc(t.name) for t in tenants)
+
+
 # ---- commands -------------------------------------------------------------
 
 
@@ -92,9 +123,14 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if await _scope(update, context) is None:
+    tenants = await _scope(update, context)
+    if tenants is None:
         return
-    await _reply(update, FULL_HELP)
+    await _reply(update, _help(tenants))
+
+
+def _help(tenants: list[Tenant]) -> str:
+    return FULL_HELP + ("\n\n" + OWNER_HELP if len(tenants) > 1 else "")
 
 
 async def cmd_ton(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -108,12 +144,13 @@ async def cmd_hethan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     tenants = await _scope(update, context)
     if tenants is None:
         return
+    tenants, rest = pick_tenants(tenants, " ".join(context.args or []))
     days = None
-    if context.args:
-        if not context.args[0].isdigit():
+    if rest:
+        if not rest.isdigit():
             await _reply(update, "Gõ số ngày, ví dụ: <code>/hethan 60</code>")
             return
-        days = int(context.args[0])
+        days = int(rest)
     await do_hethan(update, context, tenants, days)
 
 
@@ -121,7 +158,7 @@ async def cmd_baocao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     tenants = await _scope(update, context)
     if tenants is None:
         return
-    await do_baocao(update, context, tenants)
+    await do_baocao(update, context, tenants, " ".join(context.args or []))
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -141,7 +178,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif intent.kind == "baocao":
         await do_baocao(update, context, tenants)
     elif intent.kind == "help":
-        await _reply(update, FULL_HELP)
+        await _reply(update, _help(tenants))
+    elif intent.kind == "sosanh":
+        await do_sosanh(update, context, tenants, str(intent.arg or ""))
+    elif intent.kind == "trangthai":
+        await do_trangthai(update, context, tenants)
     elif intent.kind == "top":
         await do_top(update, context, tenants, str(intent.arg or ""))
     elif intent.kind == "nv":
@@ -216,6 +257,12 @@ async def on_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             tid, sid, code = parts
             period = Period.from_code(code, now_local().date())
             await _send_staff(update, context, tenants, int(tid), int(sid), period, edit=True)
+        elif kind == "bc":
+            (tid,) = parts
+            if any(t.id == int(tid) for t in tenants):
+                svc = _svc(context)
+                await svc.sync_if_stale(int(tid), context.bot)
+                await svc.send_inventory_report(context.bot, int(tid), [update.effective_chat.id])
         elif kind == "ct":
             tid, month = parts
             tenant = next((t for t in tenants if t.id == int(tid)), None)
@@ -250,11 +297,25 @@ async def do_hethan(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants:
                 expiring_workbook(rows), filename=report_filename(t.name, "het-han", now))
 
 
-async def do_baocao(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant]) -> None:
+async def do_baocao(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant],
+                    text: str = "") -> None:
     svc = _svc(context)
     if not tenants:
         await _reply(update, "Chat này chưa gắn với NPP nào đang hoạt động.")
         return
+    picked, rest = pick_tenants(tenants, text)
+    if rest and len(tenants) > 1 and len(picked) == len(tenants):
+        await _reply(update, f"Không có NPP “{esc(rest)}”. Các NPP: {_npp_list(tenants)}")
+        return
+    if len(picked) > 1:  # owner group: one overview, full reports on request
+        messages = await asyncio.to_thread(svc.overview_messages, picked)
+        buttons = [[InlineKeyboardButton(f"Báo cáo đầy đủ: {t.name}"[:64], callback_data=f"bc:{t.id}")]
+                   for t in picked]
+        for m in messages[:-1]:
+            await _reply(update, m)
+        await _reply(update, messages[-1], reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    tenants = picked
     await _reply(update, "⏳ Đang lấy số liệu mới từ KiotViet…")
     for t in tenants:
         await svc.sync_if_stale(t.id, context.bot)
@@ -332,6 +393,7 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def do_top(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant], text: str) -> None:
     svc = _svc(context)
+    tenants, text = pick_tenants(tenants, text)
     today = now_local().date()
     period = parse_period(text, today) if text.strip() else Period(today, today, describe(today, today, today))
     if period is None:
@@ -344,6 +406,47 @@ async def do_top(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: li
     for t in tenants:
         for m in await asyncio.to_thread(svc.ranking_messages, t, period):
             await _reply(update, m)
+
+
+# ---- owner group (phase 3) ---------------------------------------------------
+
+
+async def cmd_sosanh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    tenants = await _scope(update, context)
+    if tenants is None:
+        return
+    await do_sosanh(update, context, tenants, " ".join(context.args or []))
+
+
+async def do_sosanh(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant], text: str) -> None:
+    today = now_local().date()
+    period = parse_period(text, today) if text.strip() else Period(today, today, describe(today, today, today))
+    if period is None:
+        await _reply(update, f"Không hiểu kỳ “{esc(text)}”. Ví dụ: <code>/sosanh hôm qua</code>, "
+                             "<code>/sosanh tháng này</code>")
+        return
+    if not tenants:
+        await _reply(update, "Chat này chưa gắn với NPP nào đang hoạt động.")
+        return
+    for m in await asyncio.to_thread(_svc(context).comparison_messages, tenants, period):
+        await _reply(update, m)
+
+
+async def cmd_trangthai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc = _svc(context)
+    chat = update.effective_chat
+    if chat is not None and svc.settings.admin_chat_id == chat.id:  # operator: every NPP, paused ones too
+        tenants = await asyncio.to_thread(svc.all_tenants)
+    else:
+        tenants = await _scope(update, context)
+        if tenants is None:
+            return
+    await do_trangthai(update, context, tenants)
+
+
+async def do_trangthai(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant]) -> None:
+    for m in await asyncio.to_thread(_svc(context).status_messages, tenants):
+        await _reply(update, m)
 
 
 async def cmd_chitieu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -441,7 +544,9 @@ def build_application(svc: Services) -> Application:
     application.add_handler(CommandHandler("nv", cmd_nv))
     application.add_handler(CommandHandler("top", cmd_top))
     application.add_handler(CommandHandler("chitieu", cmd_chitieu))
-    application.add_handler(CallbackQueryHandler(on_choice, pattern=r"^(ton|nv|ct):"))
+    application.add_handler(CommandHandler("sosanh", cmd_sosanh))
+    application.add_handler(CommandHandler("trangthai", cmd_trangthai))
+    application.add_handler(CallbackQueryHandler(on_choice, pattern=r"^(ton|nv|ct|bc):"))
     application.add_handler(MessageHandler(filters.Document.ALL, on_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_error_handler(on_error)
