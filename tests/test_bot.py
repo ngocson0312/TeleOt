@@ -114,6 +114,38 @@ def test_baocao_sends_report_to_this_chat(svc):
     assert "Báo cáo tồn kho · NPP Thử" in bot.sent[0][1]
 
 
+def test_baocao_survives_slow_wait_message(svc):
+    """Telegram timed out on the "⏳" line (it was delivered, the answer was late): the report still goes."""
+    from telegram.error import TimedOut
+
+    bot = FakeBot()
+    update, msg = update_for(GROUP)
+
+    async def slow_reply(text, **kw):
+        raise TimedOut()
+
+    msg.reply_text = slow_reply
+    run(handlers.cmd_baocao(update, context_for(svc, bot=bot)))
+    assert "Báo cáo tồn kho · NPP Thử" in bot.sent[0][1]
+
+
+def test_error_tells_the_chat(svc):
+    bot = FakeBot()
+    update, _ = update_for(GROUP)
+    run(handlers.on_error(update, SimpleNamespace(error=RuntimeError("x"), bot=bot)))
+    assert bot.sent[0][0] == GROUP and "thử lại" in bot.sent[0][1]
+    run(handlers.on_error(None, SimpleNamespace(error=RuntimeError("x"), bot=bot)))  # no chat: log only
+    assert len(bot.sent) == 1
+
+
+def test_telegram_timeouts_are_generous():
+    from pydantic import SecretStr
+
+    app = handlers.build_application(SimpleNamespace(settings=SimpleNamespace(telegram_bot_token=SecretStr("123:TEST"))))
+    request = app.bot._request[1]  # [0] is for getUpdates, [1] for everything else
+    assert request.read_timeout == handlers.TG_READ_TIMEOUT >= 30
+
+
 def test_owner_sees_every_npp(svc, synced):
     assert sorted(svc.recipients(synced)) == sorted([GROUP, OWNER])
     assert [t.id for t in svc.scope_for_chat(OWNER)] == [synced]

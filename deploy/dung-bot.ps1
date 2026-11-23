@@ -6,6 +6,9 @@ Cần PowerShell "Run as administrator" vì bot chạy bằng tài khoản SYSTE
 param([string]$TaskName = "TeleOt")
 $root = Split-Path -Parent $PSScriptRoot
 
+$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$wasRunning = $task -and $task.State -eq "Running"
+# Stopping the task usually ends the bot too; the search below catches anything left behind.
 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
 # .venv\Scripts\python.exe starts the real interpreter as a child process: stop both.
@@ -16,4 +19,4 @@ $ids += @($procs | Where-Object { $ids -contains $_.ParentProcessId } | ForEach-
 foreach ($id in $ids) {
     Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
 }
-Write-Host ("Đã dừng bot ({0} tiến trình)." -f $ids.Count)
+if ($wasRunning -or $ids.Count -gt 0) { Write-Host "Đã dừng bot." } else { Write-Host "Bot không chạy." }

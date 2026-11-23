@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 MAX_CHOICES = 10
 TARGET_WAIT = timedelta(minutes=30)  # after /chitieu, the next .xlsx from that person is the targets file
 MAX_FILE = 5 * 1024 * 1024
+TG_CONNECT_TIMEOUT, TG_READ_TIMEOUT, TG_WRITE_TIMEOUT = 15, 30, 60  # seconds
 FULL_HELP = HELP_TEXT + "\n\n" + STAFF_HELP
 COMMANDS = [
     BotCommand("ton", "Tồn kho một mặt hàng: /ton banh quy"),
@@ -319,7 +320,10 @@ async def do_baocao(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants:
         await _reply(update, messages[-1], reply_markup=InlineKeyboardMarkup(buttons))
         return
     tenants = picked
-    await _reply(update, "⏳ Đang lấy số liệu mới từ KiotViet…")
+    try:  # only a "please wait": a slow Telegram here must not cost the report itself
+        await _reply(update, "⏳ Đang lấy số liệu mới từ KiotViet…")
+    except TelegramError as e:
+        log.warning("Không gửi được tin chờ: %s", e)
     for t in tenants:
         await svc.sync_if_stale(t.id, context.bot)
         await svc.send_inventory_report(context.bot, t.id, [update.effective_chat.id])
@@ -525,6 +529,13 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Lỗi khi xử lý tin nhắn", exc_info=context.error)
+    chat = getattr(update, "effective_chat", None)
+    if chat is None:
+        return
+    try:  # so nobody waits on an answer that is not coming
+        await context.bot.send_message(chat.id, "⚠️ Bot gặp lỗi khi xử lý (có thể do mạng chậm). Bạn thử lại sau ít phút.")
+    except TelegramError:
+        pass
 
 
 async def _post_init(application: Application) -> None:
@@ -532,9 +543,15 @@ async def _post_init(application: Application) -> None:
 
 
 def build_application(svc: Services) -> Application:
+    # The library waits 5 s by default; Telegram from Vietnam is sometimes slower than that
+    # and Excel uploads need longer still.
     application = (
         Application.builder()
         .token(svc.settings.telegram_bot_token.get_secret_value())
+        .connect_timeout(TG_CONNECT_TIMEOUT).read_timeout(TG_READ_TIMEOUT)
+        .write_timeout(TG_WRITE_TIMEOUT).pool_timeout(TG_CONNECT_TIMEOUT)
+        .get_updates_connect_timeout(TG_CONNECT_TIMEOUT).get_updates_read_timeout(TG_READ_TIMEOUT)
+        .get_updates_pool_timeout(TG_CONNECT_TIMEOUT)
         .post_init(_post_init)
         .build()
     )
