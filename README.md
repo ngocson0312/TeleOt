@@ -23,7 +23,8 @@ Bot dành cho hệ thống nhà phân phối bánh kẹo dùng KiotViet. Bot t�
   - lịch chạy tự cập nhật khi thêm NPP hoặc đổi giờ;
   - sao lưu CSDL mỗi ngày.
 - [x] **Cài đặt chạy 24/7** ([CAI-DAT.md](CAI-DAT.md)): VPS Linux (systemd) hoặc máy Windows ở nhà (Task Scheduler); tự chạy lại khi lỗi; chặn chạy 2 bản cùng lúc.
-- [x] 100 test chạy trên dữ liệu giả.
+- [x] **NPP mẫu** (`demo`): dữ liệu giả để thử bot trên Telegram khi chưa có mã KiotViet.
+- [x] 102 test chạy trên dữ liệu giả.
 - [ ] **Đang chờ:** chủ hệ thống trả lời 6 câu hỏi ở trang 10 của tài liệu (ngưỡng, số ngày báo trước hạn, giờ gửi, nhân viên có được xem xếp hạng không). Hiện bot dùng giá trị mặc định.
 - [ ] **Đang chờ:** Client ID/Secret KiotViet của 1 NPP thử và token bot Telegram, để chạy `probe` và đối chiếu số với KiotViet.
 - [ ] Chạy thật tất cả NPP 1 tuần (điều kiện xong giai đoạn 3 trong kế hoạch).
@@ -35,7 +36,7 @@ Bot dành cho hệ thống nhà phân phối bánh kẹo dùng KiotViet. Bot t�
 |---|---|
 | [KE-HOACH-KY-THUAT.md](KE-HOACH-KY-THUAT.md) | Kế hoạch kỹ thuật: kiến trúc, API KiotViet sẽ dùng, logic báo cáo, lệnh bot, phân quyền, lộ trình |
 | [app/](app/) | Code bot: `kiotviet/` (client chỉ đọc), `sync/`, `reports/`, `bot/`, `db/`, `cli.py`, `probe.py`, `main.py` |
-| [tests/](tests/) | Test trên một gian hàng KiotViet giả (`tests/fakes.py`) |
+| [tests/](tests/) | Test trên gian hàng KiotViet giả `app/demo.py` (cố định ngày trong `tests/fakes.py`) |
 | [CAI-DAT.md](CAI-DAT.md) | Cài bot chạy 24/7 trên VPS hoặc máy Windows, sao lưu, xử lý sự cố |
 | [deploy/](deploy/) | Script cài đặt: `cai-dat-linux.sh` + `teleot.service` (VPS), `cai-dat-windows.ps1`, `chay-bot.ps1`, `dung-bot.ps1` (Windows) |
 | [tai-lieu/Tro-ly-bao-cao-KiotViet-Telegram.pdf](tai-lieu/Tro-ly-bao-cao-KiotViet-Telegram.pdf) | Tài liệu giới thiệu 10 trang khổ điện thoại |
@@ -54,6 +55,17 @@ pytest                           # chạy test trên dữ liệu giả
 copy .env.example .env           # Linux: cp .env.example .env
 python -m app.cli gen-key        # dán kết quả vào SECRET_KEY trong .env
 ```
+
+### Thử bot khi chưa có mã KiotViet
+
+```bash
+python -m app.cli demo --chat <mã chat>    # NPP mẫu: hàng, lô, 30 ngày hóa đơn, 3 nhân viên, chỉ tiêu (đều giả)
+python -m app.main                         # rồi nhắn bot /ton banh, /baocao, /hethan, /nv, /top, /chitieu
+python -m app.cli demo                     # làm mới số liệu giả theo ngày hôm nay
+python -m app.cli demo --remove            # xóa NPP mẫu khi đã có NPP thật
+```
+
+Mã chat lấy bằng cách nhắn `/start` hoặc `/id` cho bot. NPP mẫu không gọi KiotViet, kể cả khi bot đồng bộ theo lịch.
 
 ### Giai đoạn 0: gọi thử API thật
 

@@ -29,6 +29,14 @@ def test_unregistered_chat_is_ignored(svc):
     assert msg.replies == [] and msg2.replies == []
 
 
+def test_start_in_unregistered_chat_explains_access(svc):
+    update, msg = update_for(6555, chat_type="private")
+    run(handlers.cmd_help(update, context_for(svc)))
+    text = msg.replies[0][0]
+    assert "chưa được cấp quyền" in text and "<code>6555</code>" in text
+    assert "/ton" not in text  # no command list until the chat has access
+
+
 def test_id_answers_anywhere(svc):
     update, msg = update_for(-555)
     run(handlers.cmd_id(update, context_for(svc)))

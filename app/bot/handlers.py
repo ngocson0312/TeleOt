@@ -124,7 +124,10 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tenants = await _scope(update, context)
-    if tenants is None:
+    if tenants is None:  # /start in a chat without access yet: say how to get it instead of staying silent
+        chat_id = update.effective_chat.id
+        await _reply(update, f"👋 Chat này chưa được cấp quyền dùng bot.\nMã chat: <code>{chat_id}</code>\n"
+                             f"Người vận hành cấp quyền bằng: <code>python -m app.cli chat-add {chat_id} --tenant ID</code>")
         return
     await _reply(update, _help(tenants))
 

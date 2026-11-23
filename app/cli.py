@@ -16,8 +16,9 @@ from telegram import Bot
 from app.bot.formatting import format_inventory_report
 from app.config import DATA_DIR, ChatSettings, TenantSettings, get_settings, setup_logging
 from app.crypto import CryptoError, SecretBox, generate_key
-from app.db.models import Chat, Tenant
+from app.db.models import Base, Chat, Target, Tenant
 from app.db.session import Database
+from app.demo import DEMO_NAME, DEMO_RETAILER, DEMO_TARGETS
 from app.kiotviet.client import KiotVietAuthError, KiotVietClient
 from app.probe import run_probe
 from app.reports.excel import inventory_workbook, report_filename
@@ -229,6 +230,53 @@ def cmd_sync(args) -> None:
           f"{result.invoices} hóa đơn, {result.returns} phiếu trả hàng, {result.requests} request.")
 
 
+# ---- demo ---------------------------------------------------------------------
+
+
+def _clear_tenant_rows(db, tenant_id: int, *, keep_chats: bool) -> None:
+    """Delete every row belonging to one NPP, children first. The tenants row itself stays."""
+    for table in reversed(Base.metadata.sorted_tables):
+        if table.name == "tenants" or "tenant_id" not in table.c or (keep_chats and table.name == "chats"):
+            continue
+        db.execute(table.delete().where(table.c.tenant_id == tenant_id))
+
+
+def cmd_demo(args) -> None:
+    svc = _services()
+    box = _box(svc)
+    with svc.db.session() as db:
+        t = db.scalar(select(Tenant).where(Tenant.retailer == DEMO_RETAILER))
+        if args.remove:
+            if t is None:
+                sys.exit("Chưa có NPP mẫu.")
+            _clear_tenant_rows(db, t.id, keep_chats=False)
+            db.delete(t)
+            print(f"Đã xóa NPP mẫu id={t.id}, dữ liệu giả và quyền của các chat xem nó.")
+            return
+        if t is None:
+            t = Tenant(name=DEMO_NAME, retailer=DEMO_RETAILER, client_id="demo",
+                       client_secret_enc=box.encrypt("demo"), settings_json="{}", active=True)
+            db.add(t)
+            db.flush()
+        else:  # refresh: fresh fake data dated today, chats keep their access
+            _clear_tenant_rows(db, t.id, keep_chats=True)
+        tenant_id = t.id
+        month = now_local().strftime("%Y-%m")
+        db.add_all([Target(tenant_id=tenant_id, staff_id=staff_id, month=month, kind="revenue", value=value)
+                    for staff_id, value in DEMO_TARGETS.items()])
+        if args.chat is not None:
+            chat = db.get(Chat, args.chat) or Chat(chat_id=args.chat)
+            if chat.role != "owner":  # the owner group already sees every NPP
+                chat.role, chat.tenant_id = "tenant", tenant_id
+                db.add(chat)
+    result = asyncio.run(svc.sync(tenant_id, force_branches=True))
+    print(f"NPP mẫu id={tenant_id}: {DEMO_NAME}. Dữ liệu giả: {result.products} mặt hàng, "
+          f"{result.invoices} hóa đơn 30 ngày, {result.staff} nhân viên, chỉ tiêu tháng {month[5:]}/{month[:4]}.")
+    if args.chat is not None:
+        print(f"Chat {args.chat} xem được NPP mẫu. Thử: /ton banh, /baocao, /hethan, /nv, /top, /chitieu")
+    print("Làm mới số liệu: chạy lại lệnh này. Xóa hẳn: python -m app.cli demo --remove")
+
+
 def _strip_html(text: str) -> str:
     return html.unescape(re.sub(r"</?(b|i|code)>", "", text))
 
@@ -397,6 +445,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(fn=cmd_tenant_add)
 
     sub.add_parser("tenant-list", help="danh sách NPP").set_defaults(fn=cmd_tenant_list)
+
+    a = sub.add_parser("demo", help="NPP mẫu với dữ liệu giả để thử bot khi chưa có mã KiotViet")
+    a.add_argument("--chat", type=int, help="cấp quyền chat này xem NPP mẫu (lấy mã bằng /id)")
+    a.add_argument("--remove", action="store_true", help="xóa NPP mẫu và toàn bộ dữ liệu giả")
+    a.set_defaults(fn=cmd_demo)
 
     a = sub.add_parser("tenant-key", help="NPP đổi Client Secret trên KiotViet: lưu mã mới")
     a.add_argument("tenant_id", type=int)

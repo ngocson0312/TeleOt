@@ -94,6 +94,32 @@ def test_cli_tenant_key_replaces_secret(cli_env, capsys, monkeypatch):
         cli.main(["tenant-key", "1", "--no-check"])
 
 
+def test_cli_demo_create_refresh_remove(cli_env, capsys, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(cli, "now_local", lambda: NOW)
+    monkeypatch.setattr("app.services.now_local", lambda: NOW)
+    monkeypatch.setattr("app.sync.runner.now_local", lambda: NOW)
+    cli.main(["chat-add", "-100777", "--owner"])
+
+    def count(table, where=""):
+        return sqlite3.connect(cli_env / "cli.db").execute(f"select count(*) from {table} {where}").fetchone()[0]
+
+    cli.main(["demo", "--chat", "6555"])
+    out = capsys.readouterr().out
+    assert "NPP mẫu id=1" in out and "7 mặt hàng, 35 hóa đơn" in out  # synced from the built-in fake shop
+    assert count("chats", "where chat_id=6555 and tenant_id=1") == 1 and count("targets") == 2
+
+    cli.main(["demo", "--chat", "-100777"])  # refresh; the owner group stays the owner group
+    assert count("tenants") == 1 and count("targets") == 2 and count("invoices") == 35
+    assert count("chats", "where chat_id=6555") == 1 and count("chats", "where role='owner'") == 1
+
+    cli.main(["demo", "--remove"])
+    assert count("tenants") == 0 and count("invoices") == 0 and count("products") == 0
+    assert count("chats") == 1  # only the owner group is left
+    with pytest.raises(SystemExit):
+        cli.main(["demo", "--remove"])
+
+
 def test_cli_rejects_bad_settings(cli_env):
     cli.main(["tenant-add", "--name", "A", "--from-env", "--no-check"])
     with pytest.raises(SystemExit):

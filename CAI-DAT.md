@@ -15,6 +15,7 @@ Bot phải chạy liên tục để đồng bộ KiotViet mỗi 15 phút và g�
 1. **Token bot:** nhắn @BotFather trên Telegram, gõ `/newbot`, đặt tên, nhận token dạng `123456:ABC...`. Gõ tiếp `/setprivacy`, chọn bot, chọn **Disable** để bot hiểu được tin nhắn không có dấu `/` (ví dụ "tồn bánh quy").
 2. **Nhóm Telegram:** mỗi NPP một nhóm, thêm một nhóm tổng cho chủ, rồi thêm bot vào từng nhóm.
 3. **Mã KiotViet của từng NPP:** Client ID và Client Secret, lấy ở *Thiết lập cửa hàng → Thiết lập kết nối API*. Phải có sự đồng ý của NPP.
+   Chưa có mã thì cài trước, thử bằng NPP mẫu: `demo --chat <mã chat>` (xem README). Có NPP thật thì `demo --remove`.
 
 ## Cách 1: VPS Linux
 

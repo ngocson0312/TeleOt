@@ -20,6 +20,7 @@ from app.config import ChatSettings, Settings, TenantSettings
 from app.crypto import SecretBox
 from app.db.models import Chat, Product, SyncState, Tenant
 from app.db.session import Database
+from app.demo import DEMO_RETAILER, DemoShop
 from app.kiotviet.client import KiotVietClient
 from app.reports.excel import inventory_workbook, report_filename
 from app.reports import alerts
@@ -126,7 +127,12 @@ class Services:
         return out
 
     def make_client(self, tenant: Tenant) -> KiotVietClient:
-        http = self._http_factory() if self._http_factory else None
+        if self._http_factory:
+            http = self._http_factory()
+        elif tenant.retailer == DEMO_RETAILER:  # the demo NPP never calls KiotViet
+            http = DemoShop(now_local().date()).http()
+        else:
+            http = None
         return KiotVietClient(tenant.retailer, tenant.client_id, self.box.decrypt(tenant.client_secret_enc), http=http)
 
     # ---- sync --------------------------------------------------------------
