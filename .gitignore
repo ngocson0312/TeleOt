@@ -20,3 +20,7 @@ desktop.ini
 .DS_Store
 .vscode/
 .idea/
+
+# Dữ liệu thật của NPP (CSDL, mẫu API từ lệnh probe, file Excel xuất ra)
+data/
+.pytest_cache/

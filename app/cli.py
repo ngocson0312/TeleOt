@@ -1,0 +1,293 @@
+"""Operator commands: python -m app.cli <lệnh>. Run with -h for the list."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import getpass
+import html
+import json
+import re
+import sys
+from pathlib import Path
+
+from sqlalchemy import select
+from telegram import Bot
+
+from app.bot.formatting import format_inventory_report
+from app.config import DATA_DIR, TenantSettings, get_settings, setup_logging
+from app.crypto import CryptoError, SecretBox, generate_key
+from app.db.models import Chat, Tenant
+from app.db.session import Database
+from app.kiotviet.client import KiotVietAuthError, KiotVietClient
+from app.probe import run_probe
+from app.reports.excel import inventory_workbook, report_filename
+from app.services import Services
+from app.timeutil import now_local
+
+
+def _services() -> Services:
+    settings = get_settings()
+    db = Database(settings.database_url)
+    db.create_all()
+    return Services(settings, db)
+
+
+def _box(svc: Services) -> SecretBox:
+    try:
+        return svc.box
+    except CryptoError as e:
+        sys.exit(str(e))
+
+
+# ---- tenants ------------------------------------------------------------------
+
+
+def cmd_tenant_add(args) -> None:
+    svc = _services()
+    box = _box(svc)
+    s = svc.settings
+    if args.from_env:
+        retailer, client_id = s.kiotviet_retailer, s.kiotviet_client_id
+        secret = s.kiotviet_client_secret.get_secret_value()
+        if not (retailer and client_id and secret):
+            sys.exit("Thiếu KIOTVIET_RETAILER / KIOTVIET_CLIENT_ID / KIOTVIET_CLIENT_SECRET trong .env")
+    else:
+        retailer = args.retailer or input("Tên gian hàng (Retailer): ").strip()
+        client_id = args.client_id or input("Client ID: ").strip()
+        secret = getpass.getpass("Client Secret (không hiện khi gõ): ").strip()
+    if not args.no_check:
+        async def check():
+            async with KiotVietClient(retailer, client_id, secret) as c:
+                await c.fetch_token()
+        try:
+            asyncio.run(check())
+            print("✔ Đã lấy được token KiotViet.")
+        except KiotVietAuthError as e:
+            sys.exit(f"✘ {e}\nKhông lưu. Kiểm tra lại mã, hoặc thêm --no-check để bỏ qua bước này.")
+    with svc.db.session() as db:
+        if db.scalar(select(Tenant).where(Tenant.retailer == retailer)):
+            sys.exit(f"Gian hàng {retailer} đã có. Xem: python -m app.cli tenant-list")
+        t = Tenant(name=args.name, retailer=retailer, client_id=client_id,
+                   client_secret_enc=box.encrypt(secret), settings_json="{}", active=True)
+        db.add(t)
+        db.flush()
+        print(f"Đã thêm NPP id={t.id}: {t.name} ({retailer})")
+        print(f"Tiếp theo: python -m app.cli sync {t.id}")
+
+
+def cmd_tenant_list(args) -> None:
+    svc = _services()
+    with svc.db.session() as db:
+        tenants = list(db.scalars(select(Tenant).order_by(Tenant.id)))
+        if not tenants:
+            print("Chưa có NPP nào. Thêm bằng: python -m app.cli tenant-add --name \"Tên NPP\"")
+        for t in tenants:
+            state = "đang chạy" if t.active else "tạm dừng"
+            print(f"{t.id}. {t.name} · gian hàng {t.retailer} · {state}")
+            print(f"   cấu hình: {TenantSettings.from_json(t.settings_json).model_dump_json()}")
+
+
+def _parse_value(raw: str):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        if re.fullmatch(r"\d{1,2}:\d{2}(,\d{1,2}:\d{2})*", raw):  # 8:00,12:00 -> list of times
+            return [f"{int(t.split(':')[0]):02d}:{t.split(':')[1]}" for t in raw.split(",")]
+        return raw
+
+
+def cmd_tenant_set(args) -> None:
+    svc = _services()
+    with svc.db.session() as db:
+        t = db.get(Tenant, args.tenant_id) or sys.exit(f"Không có NPP id={args.tenant_id}")
+        if args.key == "active":
+            t.active = _parse_value(args.value) in (True, 1, "true", "yes")
+            print(f"{t.name}: {'đang chạy' if t.active else 'tạm dừng'}")
+            return
+        if args.key == "name":
+            t.name = args.value
+            print(f"Đã đổi tên thành {t.name}")
+            return
+        if args.key not in TenantSettings.model_fields:
+            sys.exit("Khóa không hợp lệ. Dùng một trong: name, active, " + ", ".join(TenantSettings.model_fields))
+        data = json.loads(t.settings_json or "{}")
+        data[args.key] = _parse_value(args.value)
+        try:
+            new = TenantSettings.model_validate(data)
+        except ValueError as e:
+            sys.exit(f"Giá trị không hợp lệ: {e}")
+        t.settings_json = new.to_json()
+        print(f"Đã lưu {args.key} = {getattr(new, args.key)!r}. Khởi động lại bot nếu đổi giờ gửi.")
+
+
+# ---- chats --------------------------------------------------------------------
+
+
+def cmd_chat_add(args) -> None:
+    svc = _services()
+    if not args.owner and args.tenant is None:
+        sys.exit("Cần --tenant ID (nhóm của một NPP) hoặc --owner (nhóm tổng xem tất cả)")
+    with svc.db.session() as db:
+        if args.tenant is not None and db.get(Tenant, args.tenant) is None:
+            sys.exit(f"Không có NPP id={args.tenant}")
+        chat = db.get(Chat, args.chat_id) or Chat(chat_id=args.chat_id)
+        chat.role = "owner" if args.owner else "tenant"
+        chat.tenant_id = None if args.owner else args.tenant
+        chat.title = args.title
+        db.add(chat)
+    print(f"Đã cấp quyền chat {args.chat_id}: " + ("nhóm tổng, xem tất cả NPP" if args.owner else f"NPP id={args.tenant}"))
+
+
+def cmd_chat_list(args) -> None:
+    svc = _services()
+    with svc.db.session() as db:
+        chats = list(db.scalars(select(Chat).order_by(Chat.chat_id)))
+        if not chats:
+            print("Chưa có chat nào. Nhắn /id cho bot trong nhóm để lấy mã chat.")
+        for c in chats:
+            scope = "nhóm tổng (tất cả NPP)" if c.role == "owner" else f"NPP id={c.tenant_id}"
+            print(f"{c.chat_id} · {scope}" + (f" · {c.title}" if c.title else ""))
+
+
+def cmd_chat_remove(args) -> None:
+    svc = _services()
+    with svc.db.session() as db:
+        chat = db.get(Chat, args.chat_id)
+        if chat is None:
+            sys.exit("Không có chat này")
+        db.delete(chat)
+    print(f"Đã bỏ quyền chat {args.chat_id}")
+
+
+# ---- sync / report ------------------------------------------------------------
+
+
+def cmd_sync(args) -> None:
+    svc = _services()
+    _box(svc)
+    result = asyncio.run(svc.sync(args.tenant_id, force_branches=True))
+    print(f"Xong: {result.branches} chi nhánh, {result.products} mặt hàng, "
+          f"{result.invoices} hóa đơn, {result.requests} request.")
+
+
+def _strip_html(text: str) -> str:
+    return html.unescape(re.sub(r"</?(b|i|code)>", "", text))
+
+
+def cmd_report(args) -> None:
+    svc = _services()
+    if svc.tenant(args.tenant_id) is None:
+        sys.exit(f"Không có NPP id={args.tenant_id}")
+    report = asyncio.run(svc.inventory_report(args.tenant_id))
+    messages, _ = format_inventory_report(report, now_local())
+    for m in messages:
+        print(_strip_html(m))
+        print()
+    if args.excel:
+        path = DATA_DIR / report_filename(report.tenant_name, "ton-kho", now_local())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(inventory_workbook(report))
+        print(f"Đã ghi file Excel: {path}")
+
+
+def cmd_send_report(args) -> None:
+    svc = _services()
+    token = svc.settings.telegram_bot_token.get_secret_value() or sys.exit("Thiếu TELEGRAM_BOT_TOKEN")
+    chats = svc.recipients(args.tenant_id)
+    if not chats:
+        sys.exit("NPP này chưa có chat nào nhận báo cáo. Thêm bằng: python -m app.cli chat-add")
+
+    async def go():
+        async with Bot(token) as bot:
+            await svc.send_inventory_report(bot, args.tenant_id, chats, force_excel=args.excel)
+
+    asyncio.run(go())
+    print(f"Đã gửi tới {len(chats)} chat.")
+
+
+def cmd_probe(args) -> None:
+    s = get_settings()
+    if args.tenant is not None:
+        svc = _services()
+        t = svc.tenant(args.tenant) or sys.exit(f"Không có NPP id={args.tenant}")
+        retailer, client_id, secret = t.retailer, t.client_id, _box(svc).decrypt(t.client_secret_enc)
+    else:
+        retailer, client_id = s.kiotviet_retailer, s.kiotviet_client_id
+        secret = s.kiotviet_client_secret.get_secret_value()
+        if not (retailer and client_id and secret):
+            sys.exit("Điền KIOTVIET_RETAILER, KIOTVIET_CLIENT_ID, KIOTVIET_CLIENT_SECRET vào .env, "
+                     "hoặc dùng --tenant ID")
+    out = Path(args.out) if args.out else DATA_DIR / "probe" / retailer
+    print(asyncio.run(run_probe(retailer, client_id, secret, out)))
+    print(f"\nĐã lưu mẫu phản hồi vào {out} (dữ liệu thật, không commit, không gửi công khai).")
+    print(f"Có thể gửi file {out / 'ket-qua.txt'}: chỉ có tên trường và số lượng.")
+
+
+def cmd_gen_key(args) -> None:
+    print(generate_key())
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="python -m app.cli", description="Quản trị bot báo cáo KiotViet → Telegram")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("gen-key", help="tạo SECRET_KEY cho .env").set_defaults(fn=cmd_gen_key)
+
+    a = sub.add_parser("probe", help="giai đoạn 0: gọi thử API KiotViet, trả lời các câu hỏi ở mục 3")
+    a.add_argument("--tenant", type=int, help="dùng mã của NPP đã thêm (mặc định: lấy từ .env)")
+    a.add_argument("--out", help="thư mục lưu kết quả")
+    a.set_defaults(fn=cmd_probe)
+
+    a = sub.add_parser("tenant-add", help="thêm NPP (mã KiotViet được mã hóa trước khi lưu)")
+    a.add_argument("--name", required=True, help="tên hiển thị trong báo cáo")
+    a.add_argument("--retailer")
+    a.add_argument("--client-id")
+    a.add_argument("--from-env", action="store_true", help="lấy mã từ KIOTVIET_* trong .env")
+    a.add_argument("--no-check", action="store_true", help="không thử lấy token trước khi lưu")
+    a.set_defaults(fn=cmd_tenant_add)
+
+    sub.add_parser("tenant-list", help="danh sách NPP").set_defaults(fn=cmd_tenant_list)
+
+    a = sub.add_parser("tenant-set", help="đổi cấu hình NPP, ví dụ: tenant-set 1 report_times 8:00,12:00,17:00")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("key")
+    a.add_argument("value")
+    a.set_defaults(fn=cmd_tenant_set)
+
+    a = sub.add_parser("chat-add", help="cấp quyền một nhóm Telegram (lấy mã bằng /id)")
+    a.add_argument("chat_id", type=int)
+    a.add_argument("--tenant", type=int)
+    a.add_argument("--owner", action="store_true", help="nhóm tổng, xem tất cả NPP")
+    a.add_argument("--title")
+    a.set_defaults(fn=cmd_chat_add)
+
+    sub.add_parser("chat-list", help="danh sách chat được cấp quyền").set_defaults(fn=cmd_chat_list)
+
+    a = sub.add_parser("chat-remove", help="bỏ quyền một chat")
+    a.add_argument("chat_id", type=int)
+    a.set_defaults(fn=cmd_chat_remove)
+
+    a = sub.add_parser("sync", help="đồng bộ ngay một NPP")
+    a.add_argument("tenant_id", type=int)
+    a.set_defaults(fn=cmd_sync)
+
+    a = sub.add_parser("report", help="in báo cáo tồn kho ra màn hình (không gửi Telegram)")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("--excel", action="store_true", help="ghi thêm file Excel vào data/")
+    a.set_defaults(fn=cmd_report)
+
+    a = sub.add_parser("send-report", help="gửi ngay báo cáo tồn kho tới các nhóm của NPP")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("--excel", action="store_true", help="luôn gửi kèm file Excel")
+    a.set_defaults(fn=cmd_send_report)
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    setup_logging(get_settings().log_level)
+    args = build_parser().parse_args(argv)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

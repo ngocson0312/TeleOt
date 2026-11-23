@@ -195,19 +195,26 @@ sync_state(tenant_id, resource, last_modified)
 5. Chỉ tiêu tính theo doanh thu hay số lượng? Có chỉ tiêu riêng theo mặt hàng không?
 6. Gửi báo cáo lúc mấy giờ? Nhân viên có được xem bảng xếp hạng không?
 
-## 13. Cấu trúc thư mục dự kiến
+## 13. Cấu trúc thư mục
 
 ```
 app/
-  main.py              khởi động bot + scheduler
-  config.py
+  main.py              khởi động bot + scheduler (python -m app.main)
+  cli.py               lệnh quản trị: probe, tenant-*, chat-*, sync, report, send-report
+  probe.py             giai đoạn 0: kiểm tra các điểm chưa rõ ở mục 3 trên dữ liệu thật
+  config.py            cấu hình từ .env + cấu hình riêng từng NPP (ngưỡng, giờ gửi)
+  services.py          đồng bộ, gửi báo cáo, báo lỗi cho người vận hành
+  scheduler.py         lịch chạy (JobQueue của python-telegram-bot, dựa trên APScheduler)
+  crypto.py            mã hóa client secret (Fernet)
   kiotviet/client.py   token, phân trang, retry, chỉ GET
-  sync/                products.py, invoices.py, returns.py, staff.py
-  reports/             inventory.py, staff.py, ranking.py, excel.py
+  sync/                products.py (chi nhánh, hàng, tồn, lô), invoices.py, runner.py, parse.py
+  reports/             inventory.py (3 loại báo cáo + tra cứu), excel.py
   bot/                 handlers.py, text_parse.py, formatting.py
   db/                  models.py, session.py
-tests/
+tests/                 test trên gian hàng KiotViet giả (tests/fakes.py)
 tai-lieu/              tài liệu gửi anh rể (PDF + ảnh + nguồn)
 .env.example
-requirements.txt
+requirements.txt, requirements-dev.txt
 ```
+
+Giai đoạn 2 thêm `sync/staff.py`, `sync/returns.py`, `reports/staff.py`, `reports/ranking.py`.

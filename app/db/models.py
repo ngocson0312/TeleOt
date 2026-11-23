@@ -1,0 +1,132 @@
+"""Tables (section 8 of the plan). Phase 2 adds staff/returns/targets via create_all."""
+from __future__ import annotations
+
+from datetime import date, datetime
+
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Tenant(Base):
+    """One NPP = one KiotViet shop."""
+
+    __tablename__ = "tenants"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    retailer: Mapped[str] = mapped_column(String(200), unique=True)
+    client_id: Mapped[str] = mapped_column(String(200))
+    client_secret_enc: Mapped[str] = mapped_column(Text)
+    settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Chat(Base):
+    """A Telegram chat allowed to use the bot. tenant_id NULL + role 'owner' = sees all NPPs."""
+
+    __tablename__ = "chats"
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    role: Mapped[str] = mapped_column(String(20), default="tenant")  # tenant | owner
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class Branch(Base):
+    __tablename__ = "branches"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    name: Mapped[str] = mapped_column(String(200))
+
+
+class Product(Base):
+    __tablename__ = "products"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    code: Mapped[str] = mapped_column(String(100), default="")
+    name: Mapped[str] = mapped_column(String(500))
+    name_norm: Mapped[str] = mapped_column(String(600), default="")  # unaccented name + code, for search
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    product_type: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1 combo, 2 thường, 3 dịch vụ
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_batch_expire: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Extra selling units (thùng/hộp) point at the base-unit product.
+    master_unit_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_value: Mapped[float] = mapped_column(Float, default=1.0)
+    removed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    @property
+    def is_base_unit(self) -> bool:
+        return not self.master_unit_id or self.master_unit_id == self.id
+
+
+class Inventory(Base):
+    __tablename__ = "inventory"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    product_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    branch_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    on_hand: Mapped[float] = mapped_column(Float, default=0)
+    reserved: Mapped[float] = mapped_column(Float, default=0)
+    min_qty: Mapped[float | None] = mapped_column(Float, nullable=True)  # None = not set on KiotViet
+    max_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class Batch(Base):
+    __tablename__ = "batches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    product_id: Mapped[int] = mapped_column(BigInteger)
+    branch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    batch_name: Mapped[str] = mapped_column(String(200), default="")
+    expire_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    on_hand: Mapped[float] = mapped_column(Float, default=0)
+
+    __table_args__ = (Index("ix_batches_tenant_product", "tenant_id", "product_id"),)
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    code: Mapped[str] = mapped_column(String(100), default="")
+    branch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sold_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sold_by_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    customer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    purchase_date: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[int] = mapped_column(Integer)  # 1 hoàn thành, 2 hủy, 3 đang xử lý, 5 không giao được
+    total: Mapped[float] = mapped_column(Float, default=0)
+    modified_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (Index("ix_invoices_tenant_date", "tenant_id", "purchase_date"),)
+
+
+class InvoiceLine(Base):
+    __tablename__ = "invoice_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    invoice_id: Mapped[int] = mapped_column(BigInteger)
+    product_id: Mapped[int] = mapped_column(BigInteger)
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+    price: Mapped[float] = mapped_column(Float, default=0)
+    discount: Mapped[float] = mapped_column(Float, default=0)
+
+    __table_args__ = (
+        Index("ix_lines_tenant_invoice", "tenant_id", "invoice_id"),
+        Index("ix_lines_tenant_product", "tenant_id", "product_id"),
+    )
+
+
+class SyncState(Base):
+    __tablename__ = "sync_state"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    resource: Mapped[str] = mapped_column(String(50), primary_key=True)
+    last_modified: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # cursor for lastModifiedFrom
+    last_success: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alerted: Mapped[bool] = mapped_column(Boolean, default=False)
