@@ -67,6 +67,9 @@ Tài liệu chưa rõ hoặc tự mâu thuẫn ở các điểm sau:
 - [ ] Trả hàng có `soldById` không. Nếu không có, gán theo người bán của hóa đơn gốc.
 - [ ] Gói KiotViet nào có mục "Thiết lập kết nối API". Tài liệu không nói, cần kiểm tra trên tài khoản từng NPP hoặc hỏi KiotViet.
 - [ ] Giới hạn 5.000/giờ tính theo gian hàng hay theo client.
+- [ ] `discount` trên dòng hóa đơn là giảm giá mỗi đơn vị hay cả dòng, có `subTotal` không. `probe` cộng thử từng công thức và so với tổng hóa đơn.
+- [ ] Hàng nhiều đơn vị tính: đơn vị lớn (thùng) có `masterUnitId` trỏ về đơn vị gốc và `conversionValue` không. Code đang giả định có.
+- [ ] Doanh thu nhân viên theo tổng hóa đơn hay cộng dòng hàng mới khớp báo cáo nhân viên của KiotViet. Đối soát bằng `python -m app.cli staff-check`.
 
 ## 4. Đồng bộ dữ liệu
 
@@ -207,14 +210,15 @@ app/
   scheduler.py         lịch chạy (JobQueue của python-telegram-bot, dựa trên APScheduler)
   crypto.py            mã hóa client secret (Fernet)
   kiotviet/client.py   token, phân trang, retry, chỉ GET
-  sync/                products.py (chi nhánh, hàng, tồn, lô), invoices.py, runner.py, parse.py
-  reports/             inventory.py (3 loại báo cáo + tra cứu), excel.py
-  bot/                 handlers.py, text_parse.py, formatting.py
-  db/                  models.py, session.py
-tests/                 test trên gian hàng KiotViet giả (tests/fakes.py)
+  sync/                products.py (chi nhánh, hàng, tồn, lô), invoices.py, returns.py, staff.py,
+                       runner.py, parse.py
+  reports/             inventory.py (3 loại báo cáo tồn kho + tra cứu), excel.py,
+                       staff.py (doanh thu, chỉ tiêu, xếp hạng), periods.py (kỳ: hôm nay, tháng 11...),
+                       targets.py (đọc / tạo file Excel chỉ tiêu)
+  bot/                 handlers.py, text_parse.py, formatting.py (tồn kho), staff_format.py (nhân viên)
+  db/                  models.py, session.py (tự thêm cột mới vào CSDL cũ)
+tests/                 test trên gian hàng KiotViet giả (tests/fakes.py), đối tượng Telegram giả (tests/tg.py)
 tai-lieu/              tài liệu gửi anh rể (PDF + ảnh + nguồn)
 .env.example
 requirements.txt, requirements-dev.txt
 ```
-
-Giai đoạn 2 thêm `sync/staff.py`, `sync/returns.py`, `reports/staff.py`, `reports/ranking.py`.

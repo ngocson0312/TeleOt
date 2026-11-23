@@ -75,6 +75,7 @@ def save_invoices(session: Session, tenant_id: int, items: list[dict]) -> int:
                     quantity=to_float(d.get("quantity")),
                     price=to_float(d.get("price")),
                     discount=to_float(d.get("discount")),
+                    sub_total=to_float(d["subTotal"]) if d.get("subTotal") is not None else None,
                 )
             )
     return len(by_id)

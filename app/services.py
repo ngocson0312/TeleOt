@@ -13,14 +13,18 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from app.bot.formatting import format_inventory_report
+from app.bot.staff_format import format_daily_ranking, format_ranking, format_staff_detail
 from app.config import Settings, TenantSettings
 from app.crypto import SecretBox
-from app.db.models import Chat, SyncState, Tenant
+from app.db.models import Chat, Product, SyncState, Tenant
 from app.db.session import Database
 from app.kiotviet.client import KiotVietClient
 from app.reports.excel import inventory_workbook, report_filename
 from app.reports.inventory import InventoryReport, build_inventory_report, load_snapshot
+from app.reports.periods import Period
+from app.reports.staff import compute_stats, month_progress, ranking
 from app.sync.invoices import prune_invoices
+from app.sync.returns import prune_returns
 from app.sync.runner import SyncResult, last_stock_sync, sync_tenant
 from app.textutil import esc
 from app.timeutil import now_local
@@ -75,6 +79,13 @@ class Services:
         with self.db.session() as s:
             return list(s.scalars(select(Chat.chat_id).where(
                 or_(Chat.tenant_id == tenant_id, Chat.role == "owner"))))
+
+    def ranking_recipients(self, tenant_id: int) -> list[int]:
+        """Question 6 for the owner: can staff see the ranking? If not, owner groups only."""
+        if self.tenant_settings(self.tenant(tenant_id)).ranking_to_npp_groups:
+            return self.recipients(tenant_id)
+        with self.db.session() as s:
+            return list(s.scalars(select(Chat.chat_id).where(Chat.role == "owner")))
 
     def make_client(self, tenant: Tenant) -> KiotVietClient:
         http = self._http_factory() if self._http_factory else None
@@ -164,7 +175,50 @@ class Services:
             except TelegramError:
                 log.exception("Không gửi được báo cáo tới chat %s", chat_id)
 
+    # ---- staff -------------------------------------------------------------
+
+    def staff_detail_messages(self, tenant: Tenant, staff_id: int, name: str, period: Period,
+                              label: str | None = None) -> list[str]:
+        ts = self.tenant_settings(tenant)
+        stats = compute_stats(self.db, tenant.id, period, ts)
+        progress = month_progress(self.db, tenant.id, period.month, now_local().date(), ts) if period.month else {}
+        with self.db.session() as s:
+            products = {p.id: p for p in s.scalars(select(Product).where(Product.tenant_id == tenant.id))}
+        return format_staff_detail(name, stats.get(staff_id), period, progress.get(staff_id), products,
+                                   last_stock_sync(self.db, tenant.id), label)
+
+    def ranking_messages(self, tenant: Tenant, period: Period) -> list[str]:
+        ts = self.tenant_settings(tenant)
+        stats = compute_stats(self.db, tenant.id, period, ts)
+        previous = compute_stats(self.db, tenant.id, period.previous_day(), ts) if period.single_day else None
+        progress = month_progress(self.db, tenant.id, period.month, now_local().date(), ts) if period.month else None
+        return format_ranking(tenant.name, period, ranking(stats), last_stock_sync(self.db, tenant.id),
+                              previous=previous, progress=progress)
+
+    def daily_ranking_messages(self, tenant: Tenant) -> list[str]:
+        ts = self.tenant_settings(tenant)
+        today = now_local().date()
+        period = Period(today, today, f"hôm nay {today:%d/%m/%Y}")
+        stats = compute_stats(self.db, tenant.id, period, ts)
+        previous = compute_stats(self.db, tenant.id, period.previous_day(), ts)
+        month = f"{today:%Y-%m}"
+        progress = month_progress(self.db, tenant.id, month, today, ts)
+        return format_daily_ranking(tenant.name, period, ranking(stats), previous, progress, month,
+                                    last_stock_sync(self.db, tenant.id))
+
+    async def send_daily_ranking(self, bot: Bot, tenant_id: int, chat_ids: list[int]) -> None:
+        tenant = await asyncio.to_thread(self.tenant, tenant_id)
+        messages = await asyncio.to_thread(self.daily_ranking_messages, tenant)
+        for chat_id in chat_ids:
+            try:
+                for m in messages:
+                    await bot.send_message(chat_id, m, parse_mode=ParseMode.HTML)
+            except TelegramError:
+                log.exception("Không gửi được bảng xếp hạng tới chat %s", chat_id)
+
     def prune(self, tenant_id: int) -> int:
         tenant = self.tenant(tenant_id)
+        keep = self.tenant_settings(tenant).keep_invoice_days
+        today = now_local().date()
         with self.db.session() as s:
-            return prune_invoices(s, tenant_id, self.tenant_settings(tenant).keep_invoice_days, now_local().date())
+            return prune_invoices(s, tenant_id, keep, today) + prune_returns(s, tenant_id, keep, today)

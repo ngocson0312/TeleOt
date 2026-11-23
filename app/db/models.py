@@ -1,4 +1,4 @@
-"""Tables (section 8 of the plan). Phase 2 adds staff/returns/targets via create_all."""
+"""Tables (section 8 of the plan)."""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -114,11 +114,73 @@ class InvoiceLine(Base):
     quantity: Mapped[float] = mapped_column(Float, default=0)
     price: Mapped[float] = mapped_column(Float, default=0)
     discount: Mapped[float] = mapped_column(Float, default=0)
+    sub_total: Mapped[float | None] = mapped_column(Float, nullable=True)  # subTotal, if KiotViet sends it
 
     __table_args__ = (
         Index("ix_lines_tenant_invoice", "tenant_id", "invoice_id"),
         Index("ix_lines_tenant_product", "tenant_id", "product_id"),
     )
+
+
+class Staff(Base):
+    """KiotViet users (/users). Super Admin is not returned; invoices still carry soldByName."""
+
+    __tablename__ = "staff"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    user_name: Mapped[str] = mapped_column(String(200), default="")
+    given_name: Mapped[str] = mapped_column(String(200), default="")
+    name_norm: Mapped[str] = mapped_column(String(500), default="")
+    removed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    @property
+    def display_name(self) -> str:
+        return self.given_name or self.user_name or str(self.id)
+
+
+class Return(Base):
+    __tablename__ = "returns"
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    code: Mapped[str] = mapped_column(String(100), default="")
+    invoice_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    branch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sold_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    received_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    customer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    return_date: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total: Mapped[float] = mapped_column(Float, default=0)
+    modified_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (Index("ix_returns_tenant_date", "tenant_id", "return_date"),)
+
+
+class ReturnLine(Base):
+    __tablename__ = "return_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    return_id: Mapped[int] = mapped_column(BigInteger)
+    product_id: Mapped[int] = mapped_column(BigInteger)
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+    price: Mapped[float] = mapped_column(Float, default=0)
+
+    __table_args__ = (Index("ix_return_lines_tenant_return", "tenant_id", "return_id"),)
+
+
+class Target(Base):
+    """Monthly target: kind 'revenue' (đồng) or 'product' (quantity of one product, base unit)."""
+
+    __tablename__ = "targets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    staff_id: Mapped[int] = mapped_column(BigInteger)
+    month: Mapped[str] = mapped_column(String(7))  # YYYY-MM
+    kind: Mapped[str] = mapped_column(String(20))
+    product_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value: Mapped[float] = mapped_column(Float)
+
+    __table_args__ = (Index("ix_targets_tenant_month", "tenant_id", "month"),)
 
 
 class SyncState(Base):

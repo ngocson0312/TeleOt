@@ -32,6 +32,15 @@ async def report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     await svc.send_inventory_report(context.bot, tenant_id, chats)
 
 
+async def ranking_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc = _svc(context)
+    tenant_id = context.job.data
+    await svc.sync_if_stale(tenant_id, context.bot)
+    chats = await asyncio.to_thread(svc.ranking_recipients, tenant_id)
+    if chats:
+        await svc.send_daily_ranking(context.bot, tenant_id, chats)
+
+
 async def maintenance_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     svc = _svc(context)
     for t in await asyncio.to_thread(svc.active_tenants):
@@ -56,6 +65,11 @@ def schedule_jobs(application: Application, svc: Services) -> list[str]:
             h, m = (int(x) for x in hhmm.split(":"))
             name = f"report:{t.id}:{hhmm}"
             jq.run_daily(report_job, time=time(h, m, tzinfo=TZ), data=t.id, name=name)
+            names.append(name)
+        if ts.ranking_time:
+            h, m = (int(x) for x in ts.ranking_time.split(":"))
+            name = f"ranking:{t.id}:{ts.ranking_time}"
+            jq.run_daily(ranking_job, time=time(h, m, tzinfo=TZ), data=t.id, name=name)
             names.append(name)
     jq.run_daily(maintenance_job, time=time(3, 0, tzinfo=TZ), name="maintenance")
     names.append("maintenance")

@@ -8,67 +8,13 @@ from telegram.ext import Application
 
 from app.bot import handlers
 from app.bot.text_parse import Intent, parse_free_text
-from app.config import Settings, TenantSettings
-from app.db.models import Chat, Tenant
+from app.config import TenantSettings
+from app.db.models import Tenant
 from app.scheduler import schedule_jobs
-from app.services import Services
-from tests.fakes import NOW
+from tests.conftest import ADMIN, GROUP, OWNER
+from tests.tg import FakeBot, context_for, update_for
 
-ADMIN = 999
-GROUP = -100123
-OWNER = -100777
-
-
-class FakeMessage:
-    def __init__(self, text=""):
-        self.text = text
-        self.replies: list[tuple[str, dict]] = []
-        self.docs: list[str] = []
-
-    async def reply_text(self, text, **kw):
-        self.replies.append((text, kw))
-
-    async def reply_document(self, document, filename=None, **kw):
-        self.docs.append(filename)
-
-
-class FakeBot:
-    def __init__(self):
-        self.sent: list[tuple[int, str]] = []
-        self.docs: list[tuple[int, str]] = []
-
-    async def send_message(self, chat_id, text, **kw):
-        self.sent.append((chat_id, text))
-
-    async def send_document(self, chat_id, document, filename=None, **kw):
-        assert document[:2] == b"PK"  # xlsx is a zip
-        self.docs.append((chat_id, filename))
-
-
-def update_for(chat_id, text=""):
-    msg = FakeMessage(text)
-    return SimpleNamespace(effective_chat=SimpleNamespace(id=chat_id), effective_message=msg, callback_query=None), msg
-
-
-def context_for(svc, args=(), bot=None):
-    return SimpleNamespace(application=SimpleNamespace(bot_data={"svc": svc}), args=list(args), bot=bot or FakeBot())
-
-
-@pytest.fixture(autouse=True)
-def fixed_clock(monkeypatch):
-    for mod in ("app.services", "app.bot.handlers", "app.sync.runner"):
-        monkeypatch.setattr(f"{mod}.now_local", lambda: NOW)
-
-
-@pytest.fixture
-def svc(db, synced, box, shop):
-    settings = Settings(_env_file=None, admin_chat_id=ADMIN)
-    service = Services(settings, db, http_factory=shop.http)
-    service._box = box  # same key the tenant fixture encrypted with
-    with db.session() as s:
-        s.add(Chat(chat_id=GROUP, tenant_id=synced, role="tenant"))
-        s.add(Chat(chat_id=OWNER, tenant_id=None, role="owner"))
-    return service
+pytestmark = pytest.mark.usefixtures("fixed_clock")
 
 
 def run(coro):
@@ -199,7 +145,8 @@ def test_schedule_registers_jobs(svc, db, synced):
         t.settings_json = TenantSettings(report_times=["07:30", "18:00"]).to_json()
     app = Application.builder().token("123:TEST").build()
     names = schedule_jobs(app, svc)
-    assert names == [f"sync:{synced}", f"report:{synced}:07:30", f"report:{synced}:18:00", "maintenance"]
+    assert names == [f"sync:{synced}", f"report:{synced}:07:30", f"report:{synced}:18:00",
+                     f"ranking:{synced}:18:00", "maintenance"]
 
 
 @pytest.mark.parametrize("text,intent", [

@@ -1,11 +1,13 @@
-"""Telegram commands (section 6 of the plan, phase 1 part: /ton, /hethan, /baocao, /help)."""
+"""Telegram commands (section 6 of the plan): /ton, /hethan, /baocao, /nv, /top, /chitieu, /help, /id."""
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatMemberStatus, ChatType, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -16,21 +18,31 @@ from telegram.ext import (
 )
 
 from app.bot.formatting import HELP_TEXT, format_expiring, format_product_detail
+from app.bot.staff_format import STAFF_HELP
 from app.bot.text_parse import parse_free_text
 from app.db.models import Tenant
 from app.reports.excel import expiring_workbook, report_filename
 from app.reports.inventory import expiring_rows, load_snapshot, product_detail, search_products
+from app.reports.periods import Period, describe, parse_period, split_name_period, this_month
+from app.reports.staff import search_staff, staff_names
+from app.reports.targets import import_targets, parse_month, summary_text, template_workbook
 from app.services import Services
-from app.textutil import esc
+from app.textutil import esc, unaccent
 from app.timeutil import now_local
 
 log = logging.getLogger(__name__)
 
 MAX_CHOICES = 10
+TARGET_WAIT = timedelta(minutes=30)  # after /chitieu, the next .xlsx from that person is the targets file
+MAX_FILE = 5 * 1024 * 1024
+FULL_HELP = HELP_TEXT + "\n\n" + STAFF_HELP
 COMMANDS = [
     BotCommand("ton", "Tồn kho một mặt hàng: /ton banh quy"),
     BotCommand("hethan", "Lô sắp hết hạn: /hethan 60"),
     BotCommand("baocao", "Gửi ngay báo cáo tồn kho"),
+    BotCommand("nv", "Thống kê nhân viên: /nv Tuấn tháng 11"),
+    BotCommand("top", "Xếp hạng nhân viên: /top hôm nay"),
+    BotCommand("chitieu", "Nạp chỉ tiêu tháng từ file Excel"),
     BotCommand("help", "Hướng dẫn"),
     BotCommand("id", "Xem mã chat"),
 ]
@@ -54,6 +66,21 @@ async def _reply(update: Update, text: str, **kw) -> None:
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, **kw)
 
 
+async def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Private chats: yes. Groups: only the group's owner and administrators."""
+    chat, user = update.effective_chat, update.effective_user
+    if chat.type == ChatType.PRIVATE:
+        return True
+    if user is None:
+        return False
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+    except TelegramError:
+        log.exception("Không kiểm tra được quyền quản trị trong chat %s", chat.id)
+        return False
+    return member.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR)
+
+
 # ---- commands -------------------------------------------------------------
 
 
@@ -67,7 +94,7 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _scope(update, context) is None:
         return
-    await _reply(update, HELP_TEXT)
+    await _reply(update, FULL_HELP)
 
 
 async def cmd_ton(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -114,7 +141,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif intent.kind == "baocao":
         await do_baocao(update, context, tenants)
     elif intent.kind == "help":
-        await _reply(update, HELP_TEXT)
+        await _reply(update, FULL_HELP)
+    elif intent.kind == "top":
+        await do_top(update, context, tenants, str(intent.arg or ""))
+    elif intent.kind == "nv":
+        await do_nv(update, context, tenants, str(intent.arg))
+    elif intent.kind == "maybe_nv":  # "Tuấn tháng 11": stay quiet unless it really is a staff name
+        await do_nv(update, context, tenants, str(intent.arg), quiet=True)
 
 
 # ---- actions ----------------------------------------------------------------
@@ -175,8 +208,19 @@ async def on_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if tenants is None:
         return
     try:
-        _, tid, pid = q.data.split(":")
-        await _send_detail(update, context, tenants, int(tid), int(pid), edit=True)
+        kind, *parts = q.data.split(":")
+        if kind == "ton":
+            tid, pid = parts
+            await _send_detail(update, context, tenants, int(tid), int(pid), edit=True)
+        elif kind == "nv":
+            tid, sid, code = parts
+            period = Period.from_code(code, now_local().date())
+            await _send_staff(update, context, tenants, int(tid), int(sid), period, edit=True)
+        elif kind == "ct":
+            tid, month = parts
+            tenant = next((t for t in tenants if t.id == int(tid)), None)
+            if tenant and await _is_admin(update, context):
+                await _send_template(update, context, tenant, month)
     except ValueError:
         log.warning("callback_data lạ: %r", q.data)
 
@@ -217,6 +261,162 @@ async def do_baocao(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants:
         await svc.send_inventory_report(context.bot, t.id, [update.effective_chat.id])
 
 
+# ---- staff (phase 2) ---------------------------------------------------------------
+
+
+async def cmd_nv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    tenants = await _scope(update, context)
+    if tenants is None:
+        return
+    await do_nv(update, context, tenants, " ".join(context.args or []))
+
+
+async def do_nv(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant], text: str,
+                *, quiet: bool = False) -> None:
+    svc = _svc(context)
+    today = now_local().date()
+    name, period = split_name_period(text, today)
+    period = period or this_month(today)
+    if not name.strip():
+        if not quiet:
+            await _reply(update, "Gõ tên nhân viên, ví dụ: <code>/nv Tuấn tháng 11</code>")
+        return
+    if not tenants:
+        if not quiet:
+            await _reply(update, "Chat này chưa gắn với NPP nào đang hoạt động.")
+        return
+    found = await asyncio.to_thread(search_staff, svc.db, [t.id for t in tenants], name, MAX_CHOICES + 1)
+    if not found:
+        if not quiet:
+            await _reply(update, f"Không tìm thấy nhân viên “{esc(name)}”.")
+        return
+    if len(found) == 1:
+        await _send_staff(update, context, tenants, found[0].tenant_id, found[0].staff_id, period)
+        return
+    names = {t.id: t.name for t in tenants}
+    buttons = []
+    for m in found[:MAX_CHOICES]:
+        label = f"{names.get(m.tenant_id, '')}: {m.name}" if len(tenants) > 1 else m.name
+        buttons.append([InlineKeyboardButton(
+            label[:64], callback_data=f"nv:{m.tenant_id}:{m.staff_id}:{period.code}")])
+    await _reply(update, f"Có nhiều nhân viên khớp “{esc(name)}”, chọn một:",
+                 reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def _send_staff(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant],
+                      tenant_id: int, staff_id: int, period: Period, *, edit: bool = False) -> None:
+    svc = _svc(context)
+    tenant = next((t for t in tenants if t.id == tenant_id), None)
+    if tenant is None:
+        return
+
+    def build() -> list[str]:
+        name = staff_names(svc.db, tenant_id).get(staff_id, f"Nhân viên {staff_id}")
+        label = tenant.name if len(tenants) > 1 else None
+        return svc.staff_detail_messages(tenant, staff_id, name, period, label)
+
+    messages = await asyncio.to_thread(build)
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(messages[0], parse_mode=ParseMode.HTML)
+        messages = messages[1:]
+    for m in messages:
+        await _reply(update, m)
+
+
+async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    tenants = await _scope(update, context)
+    if tenants is None:
+        return
+    await do_top(update, context, tenants, " ".join(context.args or []))
+
+
+async def do_top(update: Update, context: ContextTypes.DEFAULT_TYPE, tenants: list[Tenant], text: str) -> None:
+    svc = _svc(context)
+    today = now_local().date()
+    period = parse_period(text, today) if text.strip() else Period(today, today, describe(today, today, today))
+    if period is None:
+        await _reply(update, f"Không hiểu kỳ “{esc(text)}”. Ví dụ: <code>/top hôm nay</code>, "
+                             "<code>/top tuần này</code>, <code>/top tháng 11</code>")
+        return
+    if not tenants:
+        await _reply(update, "Chat này chưa gắn với NPP nào đang hoạt động.")
+        return
+    for t in tenants:
+        for m in await asyncio.to_thread(svc.ranking_messages, t, period):
+            await _reply(update, m)
+
+
+async def cmd_chitieu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    tenants = await _scope(update, context)
+    if tenants is None:
+        return
+    if not await _is_admin(update, context):
+        await _reply(update, "Chỉ quản trị viên nhóm được nạp chỉ tiêu.")
+        return
+    today = now_local().date()
+    month = parse_month(context.args[0], today) if context.args else f"{today:%Y-%m}"
+    if month is None:
+        await _reply(update, "Ghi tháng dạng 11/2026, ví dụ: <code>/chitieu 12/2026</code>")
+        return
+    if not tenants:
+        await _reply(update, "Chat này chưa gắn với NPP nào đang hoạt động.")
+        return
+    if len(tenants) > 1:
+        buttons = [[InlineKeyboardButton(t.name[:64], callback_data=f"ct:{t.id}:{month}")] for t in tenants]
+        await _reply(update, "Nạp chỉ tiêu cho NPP nào?", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    await _send_template(update, context, tenants[0], month)
+
+
+async def _send_template(update: Update, context: ContextTypes.DEFAULT_TYPE, tenant: Tenant, month: str) -> None:
+    svc = _svc(context)
+    data = await asyncio.to_thread(template_workbook, svc.db, tenant.id, month)
+    context.chat_data["await_targets"] = {
+        "user": update.effective_user.id, "tenant": tenant.id, "until": now_local() + TARGET_WAIT}
+    slug = "-".join(unaccent(tenant.name).split())
+    await update.effective_message.reply_document(
+        data, filename=f"chi-tieu-{slug}-{month}.xlsx",
+        caption=(f"Mẫu chỉ tiêu tháng {month[5:]}/{month[:4]} · {tenant.name}. Điền cột Chỉ tiêu rồi gửi lại "
+                 "file vào đây trong 30 phút (hoặc gửi bất cứ lúc nào, kèm ghi chú /chitieu)."))
+
+
+async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    doc = msg.document if msg else None
+    if doc is None:
+        return
+    user = update.effective_user
+    wait = context.chat_data.get("await_targets")
+    by_caption = unaccent(msg.caption or "").startswith("/chitieu")
+    by_wait = bool(wait and user and wait["user"] == user.id and now_local() <= wait["until"])
+    if not (by_caption or by_wait):
+        return  # any other file in the group: not for us
+    tenants = await _scope(update, context)
+    if tenants is None:
+        return
+    if not await _is_admin(update, context):
+        await _reply(update, "Chỉ quản trị viên nhóm được nạp chỉ tiêu.")
+        return
+    if not (doc.file_name or "").lower().endswith(".xlsx"):
+        await _reply(update, "Gửi file Excel .xlsx theo mẫu (gõ /chitieu để lấy mẫu).")
+        return
+    if doc.file_size and doc.file_size > MAX_FILE:
+        await _reply(update, "File quá lớn (tối đa 5 MB).")
+        return
+    tenant = next((t for t in tenants if t.id == wait["tenant"]), None) if by_wait else None
+    if tenant is None and len(tenants) == 1:
+        tenant = tenants[0]
+    if tenant is None:
+        await _reply(update, "Gõ /chitieu để chọn NPP trước, rồi gửi file.")
+        return
+    file = await doc.get_file()
+    data = bytes(await file.download_as_bytearray())
+    res = await asyncio.to_thread(import_targets, _svc(context).db, tenant.id, data, now_local().date())
+    await msg.reply_text(summary_text(res))  # plain text: error lines quote cells from the file
+    if not res.errors:
+        context.chat_data.pop("await_targets", None)
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Lỗi khi xử lý tin nhắn", exc_info=context.error)
 
@@ -238,7 +438,11 @@ def build_application(svc: Services) -> Application:
     application.add_handler(CommandHandler("ton", cmd_ton))
     application.add_handler(CommandHandler("hethan", cmd_hethan))
     application.add_handler(CommandHandler("baocao", cmd_baocao))
-    application.add_handler(CallbackQueryHandler(on_choice, pattern=r"^ton:"))
+    application.add_handler(CommandHandler("nv", cmd_nv))
+    application.add_handler(CommandHandler("top", cmd_top))
+    application.add_handler(CommandHandler("chitieu", cmd_chitieu))
+    application.add_handler(CallbackQueryHandler(on_choice, pattern=r"^(ton|nv|ct):"))
+    application.add_handler(MessageHandler(filters.Document.ALL, on_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_error_handler(on_error)
     return application

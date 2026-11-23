@@ -1,4 +1,5 @@
-"""One sync pass for one NPP: branches (daily), products+stock (every time), invoices (incremental)."""
+"""One sync pass for one NPP: branches + users (daily), products+stock (every time),
+invoices and returns (incremental)."""
 from __future__ import annotations
 
 import asyncio
@@ -15,20 +16,24 @@ from app.db.session import Database
 from app.kiotviet.client import KiotVietClient
 from app.sync import invoices as inv_sync
 from app.sync import products as prod_sync
+from app.sync import returns as ret_sync
+from app.sync import staff as staff_sync
 from app.timeutil import now_local
 
 log = logging.getLogger(__name__)
 
 OVERLAP = timedelta(minutes=10)  # re-read a little before the cursor to absorb clock skew
-BRANCHES_EVERY = timedelta(hours=24)
+DAILY = timedelta(hours=24)
 
 
 @dataclass
 class SyncResult:
     tenant_id: int
     branches: int | None = None
+    staff: int | None = None
     products: int = 0
     invoices: int = 0
+    returns: int = 0
     requests: int = 0
     finished_at: datetime | None = None
 
@@ -78,13 +83,22 @@ async def sync_tenant(db: Database, tenant_id: int, client: KiotVietClient, sett
     result = SyncResult(tenant_id=tenant_id)
     requests_before = client.request_count
 
-    branch_state = await asyncio.to_thread(_get_state, db, tenant_id, "branches")
-    if force_branches or branch_state is None or branch_state.last_success is None \
-            or started - branch_state.last_success >= BRANCHES_EVERY:
-        async def do_branches():
-            page = await prod_sync.fetch_branches(client)
-            return await asyncio.to_thread(_save, db, prod_sync.save_branches, tenant_id, page.items), None
-        result.branches = await _step(db, tenant_id, "branches", started, do_branches)
+    daily = (("branches", prod_sync.fetch_branches, prod_sync.save_branches),
+             ("users", staff_sync.fetch_users, staff_sync.save_staff))
+    for resource, fetch, save in daily:
+        state = await asyncio.to_thread(_get_state, db, tenant_id, resource)
+        if not (force_branches or state is None or state.last_success is None
+                or started - state.last_success >= DAILY):
+            continue
+
+        async def do_daily(fetch=fetch, save=save):
+            page = await fetch(client)
+            return await asyncio.to_thread(_save, db, save, tenant_id, page.items), None
+        count = await _step(db, tenant_id, resource, started, do_daily)
+        if resource == "branches":
+            result.branches = count
+        else:
+            result.staff = count
 
     async def do_products():
         page = await prod_sync.fetch_products(client)
@@ -103,10 +117,21 @@ async def sync_tenant(db: Database, tenant_id: int, client: KiotVietClient, sett
         return n, started
     result.invoices = await _step(db, tenant_id, "invoices", started, do_invoices)
 
+    ret_state = await asyncio.to_thread(_get_state, db, tenant_id, "returns")
+
+    async def do_returns():
+        if ret_state is None or ret_state.last_modified is None:
+            since = datetime.combine(started.date() - timedelta(days=settings.history_days), time.min)
+        else:
+            since = ret_state.last_modified - OVERLAP
+        page = await ret_sync.fetch_returns_modified_since(client, since)
+        return await asyncio.to_thread(_save, db, ret_sync.save_returns, tenant_id, page.items), started
+    result.returns = await _step(db, tenant_id, "returns", started, do_returns)
+
     result.requests = client.request_count - requests_before
     result.finished_at = now_local()
-    log.info("Đồng bộ NPP %s xong: %s hàng, %s hóa đơn, %s request",
-             tenant_id, result.products, result.invoices, result.requests)
+    log.info("Đồng bộ NPP %s xong: %s hàng, %s hóa đơn, %s phiếu trả, %s request",
+             tenant_id, result.products, result.invoices, result.returns, result.requests)
     return result
 
 

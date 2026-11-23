@@ -152,6 +152,32 @@ class Probe:
         self.add("Trường dòng hóa đơn", ", ".join(_keys(lines)))
         status = Counter(it.get("status") for it in page.items)
         self.add("Trạng thái hóa đơn", ", ".join(f"{k}: {v}" for k, v in sorted(status.items(), key=str)))
+        self._line_formula(page.items)
+
+    def _line_formula(self, invoices: list[dict]) -> None:
+        """5.5: which line formula adds up to the invoice? Compared with total + invoice-level discount."""
+        formulas = {
+            "subTotal": lambda d: d.get("subTotal"),
+            "số lượng × (giá − giảm)": lambda d: d.get("quantity", 0) * (d.get("price", 0) - (d.get("discount") or 0)),
+            "số lượng × giá − giảm": lambda d: d.get("quantity", 0) * d.get("price", 0) - (d.get("discount") or 0),
+        }
+        hits = Counter()
+        checked = 0
+        for it in invoices:
+            lines = invoice_details(it)
+            if not lines or it.get("total") is None:
+                continue
+            checked += 1
+            expected = float(it["total"]) + float(it.get("discount") or 0)
+            for name, f in formulas.items():
+                values = [f(d) for d in lines]
+                if None not in values and abs(sum(values) - expected) < 1:
+                    hits[name] += 1
+        if not checked:
+            return
+        self.add("Cộng dòng hàng khớp tổng hóa đơn (total + discount)",
+                 "; ".join(f"{name}: {hits[name]}/{checked}" for name in formulas)
+                 + ". Doanh thu nhân viên mặc định theo tổng hóa đơn; đối soát bằng lệnh staff-check.", None)
 
     async def _returns(self, now) -> None:
         page = await self.client.get("/returns", {"pageSize": 20, "currentItem": 0})

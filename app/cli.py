@@ -21,7 +21,11 @@ from app.db.session import Database
 from app.kiotviet.client import KiotVietAuthError, KiotVietClient
 from app.probe import run_probe
 from app.reports.excel import inventory_workbook, report_filename
+from app.reports.periods import Period, parse_period
+from app.reports.staff import compute_stats
+from app.reports.targets import import_targets, parse_month, summary_text, template_workbook
 from app.services import Services
+from app.textutil import fmt_qty, unaccent
 from app.timeutil import now_local
 
 
@@ -87,11 +91,11 @@ def cmd_tenant_list(args) -> None:
             print(f"   cấu hình: {TenantSettings.from_json(t.settings_json).model_dump_json()}")
 
 
-def _parse_value(raw: str):
+def _parse_value(raw: str, key: str = ""):
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        if re.fullmatch(r"\d{1,2}:\d{2}(,\d{1,2}:\d{2})*", raw):  # 8:00,12:00 -> list of times
+        if key == "report_times" and re.fullmatch(r"\d{1,2}:\d{2}(,\d{1,2}:\d{2})*", raw):  # 8:00,12:00
             return [f"{int(t.split(':')[0]):02d}:{t.split(':')[1]}" for t in raw.split(",")]
         return raw
 
@@ -111,7 +115,7 @@ def cmd_tenant_set(args) -> None:
         if args.key not in TenantSettings.model_fields:
             sys.exit("Khóa không hợp lệ. Dùng một trong: name, active, " + ", ".join(TenantSettings.model_fields))
         data = json.loads(t.settings_json or "{}")
-        data[args.key] = _parse_value(args.value)
+        data[args.key] = _parse_value(args.value, args.key)
         try:
             new = TenantSettings.model_validate(data)
         except ValueError as e:
@@ -166,8 +170,8 @@ def cmd_sync(args) -> None:
     svc = _services()
     _box(svc)
     result = asyncio.run(svc.sync(args.tenant_id, force_branches=True))
-    print(f"Xong: {result.branches} chi nhánh, {result.products} mặt hàng, "
-          f"{result.invoices} hóa đơn, {result.requests} request.")
+    print(f"Xong: {result.branches} chi nhánh, {result.staff} nhân viên, {result.products} mặt hàng, "
+          f"{result.invoices} hóa đơn, {result.returns} phiếu trả hàng, {result.requests} request.")
 
 
 def _strip_html(text: str) -> str:
@@ -227,6 +231,75 @@ def cmd_gen_key(args) -> None:
     print(generate_key())
 
 
+# ---- staff (phase 2) ------------------------------------------------------------
+
+
+def _tenant(svc: Services, tenant_id: int) -> Tenant:
+    return svc.tenant(tenant_id) or sys.exit(f"Không có NPP id={tenant_id}")
+
+
+def _period(text: str) -> Period:
+    return parse_period(text, now_local().date()) or sys.exit(
+        f"Không hiểu kỳ {text!r}. Ví dụ: \"hôm qua\", \"tháng 11\", \"1/11-15/11\"")
+
+
+def cmd_staff_check(args) -> None:
+    """5.5: the two ways to count revenue, side by side, to compare with KiotViet's staff report."""
+    svc = _services()
+    t = _tenant(svc, args.tenant_id)
+    period = _period(args.period)
+    ts = svc.tenant_settings(t)
+    by_total = compute_stats(svc.db, t.id, period, ts.model_copy(update={"revenue_mode": "invoice_total"}))
+    by_lines = compute_stats(svc.db, t.id, period, ts.model_copy(update={"revenue_mode": "lines"}))
+    print(f"Đối soát doanh thu nhân viên · {t.name} · {period.label}")
+    print("So với KiotViet: Báo cáo → Nhân viên → Bán hàng, cùng kỳ.\n")
+    head = f"{'Nhân viên':<24}{'Số đơn':>8}{'Tổng hóa đơn':>16}{'Cộng dòng hàng':>16}{'Hàng trả':>14}"
+    print(head)
+    print("-" * len(head))
+    sums = [0, 0.0, 0.0, 0.0]
+    for sid in sorted(by_total, key=lambda k: by_total[k].name):
+        a, b = by_total[sid], by_lines[sid]
+        sums = [sums[0] + a.orders, sums[1] + a.gross, sums[2] + b.gross, sums[3] + a.returns]
+        print(f"{a.name[:23]:<24}{a.orders:>8}{fmt_qty(a.gross):>16}{fmt_qty(round(b.gross)):>16}"
+              f"{fmt_qty(a.returns):>14}")
+    print("-" * len(head))
+    print(f"{'Tổng':<24}{sums[0]:>8}{fmt_qty(sums[1]):>16}{fmt_qty(round(sums[2])):>16}{fmt_qty(sums[3]):>14}")
+    print(f"\nĐang dùng: revenue_mode = {ts.revenue_mode} "
+          f"({'tổng hóa đơn' if ts.revenue_mode == 'invoice_total' else 'cộng dòng hàng'}), trừ hàng trả.")
+    print(f"Cột nào khớp KiotViet thì đặt: python -m app.cli tenant-set {t.id} revenue_mode invoice_total|lines")
+
+
+def cmd_top(args) -> None:
+    svc = _services()
+    t = _tenant(svc, args.tenant_id)
+    for m in svc.ranking_messages(t, _period(args.period)):
+        print(_strip_html(m))
+
+
+def cmd_targets_template(args) -> None:
+    svc = _services()
+    t = _tenant(svc, args.tenant_id)
+    today = now_local().date()
+    month = parse_month(args.month, today) if args.month else f"{today:%Y-%m}"
+    if month is None:
+        sys.exit("Ghi tháng dạng 11/2026")
+    slug = "-".join(unaccent(t.name).split())
+    path = Path(args.out) if args.out else DATA_DIR / f"chi-tieu-{slug}-{month}.xlsx"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(template_workbook(svc.db, t.id, month))
+    print(f"Đã ghi file mẫu: {path}")
+
+
+def cmd_targets_import(args) -> None:
+    svc = _services()
+    t = _tenant(svc, args.tenant_id)
+    data = Path(args.file).read_bytes()
+    res = import_targets(svc.db, t.id, data, now_local().date())
+    print(summary_text(res))
+    if res.errors:
+        sys.exit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m app.cli", description="Quản trị bot báo cáo KiotViet → Telegram")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -280,6 +353,27 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("tenant_id", type=int)
     a.add_argument("--excel", action="store_true", help="luôn gửi kèm file Excel")
     a.set_defaults(fn=cmd_send_report)
+
+    a = sub.add_parser("staff-check", help="đối soát doanh thu nhân viên với KiotViet (2 cách tính)")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("period", nargs="?", default="hôm qua", help='kỳ, mặc định "hôm qua"; ví dụ "tháng 11"')
+    a.set_defaults(fn=cmd_staff_check)
+
+    a = sub.add_parser("top", help="in bảng xếp hạng nhân viên ra màn hình")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("period", nargs="?", default="hôm nay")
+    a.set_defaults(fn=cmd_top)
+
+    a = sub.add_parser("targets-template", help="ghi file Excel mẫu chỉ tiêu (điền sẵn nhân viên)")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("--month", help="tháng, ví dụ 12/2026 (mặc định tháng này)")
+    a.add_argument("--out", help="đường dẫn file")
+    a.set_defaults(fn=cmd_targets_template)
+
+    a = sub.add_parser("targets-import", help="nạp chỉ tiêu từ file Excel")
+    a.add_argument("tenant_id", type=int)
+    a.add_argument("file")
+    a.set_defaults(fn=cmd_targets_import)
     return p
 
 

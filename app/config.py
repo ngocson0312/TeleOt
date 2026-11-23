@@ -6,6 +6,7 @@ import logging
 import sys
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -41,6 +42,13 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def _check_hhmm(t: str) -> str:
+    h, _, m = t.partition(":")
+    if not (h.isdigit() and m.isdigit() and 0 <= int(h) < 24 and 0 <= int(m) < 60):
+        raise ValueError(f"Giờ không hợp lệ: {t!r} (dạng HH:MM)")
+    return f"{int(h):02d}:{m}"
+
+
 class TenantSettings(BaseModel):
     """Thresholds and schedule for one NPP. Defaults until the owner answers the questions."""
 
@@ -66,14 +74,26 @@ class TenantSettings(BaseModel):
 
     top_n: int = 15  # rows per section in a Telegram message
 
+    # 5.5-5.7 Nhân viên
+    revenue_mode: Literal["invoice_total", "lines"] = "invoice_total"  # pick after `staff-check`
+    ranking_time: str | None = "18:00"  # None = no daily ranking
+    ranking_to_npp_groups: bool = True  # False = only the owner group gets the ranking
+    skip_sundays: bool = False  # month pace counts working days only
+    behind_margin: float = 10  # "chậm tiến độ" when % đạt < tiến độ - this many points
+
     @field_validator("report_times")
     @classmethod
     def _check_times(cls, v: list[str]) -> list[str]:
         for t in v:
-            h, _, m = t.partition(":")
-            if not (h.isdigit() and m.isdigit() and 0 <= int(h) < 24 and 0 <= int(m) < 60):
-                raise ValueError(f"Giờ không hợp lệ: {t!r} (dạng HH:MM)")
+            _check_hhmm(t)
         return v
+
+    @field_validator("ranking_time")
+    @classmethod
+    def _check_ranking_time(cls, v: str | None) -> str | None:
+        if v in (None, "", "off", "tat"):
+            return None
+        return _check_hhmm(v)
 
     @classmethod
     def from_json(cls, raw: str | None) -> "TenantSettings":

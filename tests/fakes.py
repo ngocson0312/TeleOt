@@ -1,4 +1,4 @@
-"""A fake KiotViet shop for tests: 2 kho, a few products, 90 days of invoices."""
+"""A fake KiotViet shop for tests: 2 kho, a few products, 30 days of invoices, 3 sellers."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -15,9 +15,23 @@ def d(days: int) -> str:
     return (datetime.combine(TODAY, datetime.min.time()) + timedelta(days=days)).isoformat() + ".0000000"
 
 
-USERS = [{"id": 7, "userName": "tuan", "givenName": "Tuấn"}]
-RETURNS = [{"id": 1, "code": "TH1", "invoiceId": 1001, "returnDate": "2026-11-20T10:00:00",
-            "returnDetails": [{"productId": 102, "quantity": 1, "price": 12000}]}]
+# Super Admin (id 1, "Chủ cửa hàng") sells too but is not returned by /users.
+USERS = [
+    {"id": 7, "userName": "tuan", "givenName": "Tuấn"},
+    {"id": 8, "userName": "lan", "givenName": "Lan"},
+    {"id": 9, "userName": "lananh", "givenName": "Lan Anh"},
+]
+RETURNS = [
+    # no soldById: goes to the seller of invoice 1004 (day -4 = Lan)
+    {"id": 1, "code": "TH1", "invoiceId": 1004, "returnDate": d(-2).replace("T00:00:00", "T10:00:00"),
+     "returnTotal": 12000, "status": 1, "returnDetails": [{"productId": 102, "quantity": 1, "price": 12000}]},
+    # today, explicit seller Tuấn
+    {"id": 2, "code": "TH2", "invoiceId": 3002, "soldById": 7, "returnDate": d(0).replace("T00:00:00", "T07:45:00"),
+     "returnTotal": 15000, "status": 1, "returnDetails": [{"productId": 105, "quantity": 1, "price": 15000}]},
+    # cancelled: ignored
+    {"id": 3, "code": "TH3", "invoiceId": 1006, "returnDate": d(-1), "returnTotal": 999000, "status": 2,
+     "returnDetails": [{"productId": 102, "quantity": 9, "price": 111000}]},
+]
 BRANCHES = [{"id": 1, "branchName": "Kho Hà Nội"}, {"id": 2, "branchName": "Kho Hải Phòng"}]
 
 
@@ -68,24 +82,39 @@ def products() -> list[dict]:
 
 
 def invoices() -> list[dict]:
-    """30 days: 102 x10/day, 101 x2/day, 105 x5/day at kho 1; one thùng of 101 on day -3; one cancelled."""
+    """30 days at kho 1: 102 x10/day, 101 x2/day, 105 x5/day (315.000đ); odd days Tuấn, even days Lan.
+    Plus: one thùng of 101 (day -3, Tuấn), one cancelled invoice, three sales this morning."""
     out = []
     iid = 1000
     for day in range(1, 31):
         iid += 1
+        seller = (7, "Tuấn") if day % 2 else (8, "Lan")
         out.append({
             "id": iid, "code": f"HD{iid}", "purchaseDate": d(-day).replace("T00:00:00", "T09:30:00"), "branchId": 1,
-            "soldById": 7, "soldByName": "Tuấn", "customerId": 500 + day % 4, "status": 1, "total": 1,
+            "soldById": seller[0], "soldByName": seller[1], "customerId": 500 + day % 4, "status": 1, "total": 315000,
             "invoiceDetails": [
                 {"productId": 102, "quantity": 10, "price": 12000, "discount": 0},
                 {"productId": 101, "quantity": 2, "price": 60000, "discount": 0},
                 {"productId": 105, "quantity": 5, "price": 15000, "discount": 0},
             ],
         })
-    out.append({"id": 2001, "code": "HD2001", "purchaseDate": d(-3), "branchId": 1, "soldById": 7, "status": 1,
-                "total": 1, "invoiceDetails": {"productId": 103, "quantity": 1, "price": 700000, "discount": 0}})
-    out.append({"id": 2002, "code": "HD2002", "purchaseDate": d(-2), "branchId": 1, "soldById": 7, "status": 2,
-                "total": 1, "invoiceDetails": [{"productId": 104, "quantity": 50, "price": 1, "discount": 0}]})
+    out.append({"id": 2001, "code": "HD2001", "purchaseDate": d(-3), "branchId": 1, "soldById": 7, "soldByName": "Tuấn",
+                "status": 1, "total": 700000,
+                "invoiceDetails": {"productId": 103, "quantity": 1, "price": 700000, "discount": 0}})
+    out.append({"id": 2002, "code": "HD2002", "purchaseDate": d(-2), "branchId": 1, "soldById": 7, "soldByName": "Tuấn",
+                "status": 2, "total": 50, "invoiceDetails": [{"productId": 104, "quantity": 50, "price": 1, "discount": 0}]})
+    morning = d(0).replace("T00:00:00", "T0{}:00:00")
+    out += [
+        {"id": 3001, "code": "HD3001", "purchaseDate": morning.format(6), "branchId": 1, "soldById": 8,
+         "soldByName": "Lan", "customerId": 600, "status": 1, "total": 60000,
+         "invoiceDetails": [{"productId": 105, "quantity": 4, "price": 16000, "discount": 1000}]},
+        {"id": 3002, "code": "HD3002", "purchaseDate": morning.format(7), "branchId": 1, "soldById": 7,
+         "soldByName": "Tuấn", "customerId": 601, "status": 1, "total": 30000,
+         "invoiceDetails": [{"productId": 105, "quantity": 2, "price": 15000, "discount": 0}]},
+        {"id": 3003, "code": "HD3003", "purchaseDate": morning.format(7).replace(":00:00", ":30:00"), "branchId": 1,
+         "soldById": 1, "soldByName": "Chủ cửa hàng", "status": 1, "total": 20000,
+         "invoiceDetails": [{"productId": 105, "quantity": 1, "price": 20000, "discount": 0, "subTotal": 20000}]},
+    ]
     return out
 
 
@@ -93,6 +122,8 @@ class FakeShop:
     def __init__(self):
         self.products = products()
         self.invoices = invoices()
+        self.returns = [dict(r) for r in RETURNS]
+        self.synced_once = False  # first /returns call returns everything
         self.requests: list[httpx.Request] = []
 
     def _page(self, request: httpx.Request, items: list[dict], **extra) -> httpx.Response:
@@ -116,7 +147,10 @@ class FakeShop:
                 return self._page(request, [i for i in self.invoices if i.get("modifiedDate")])
             return self._page(request, self.invoices)
         if path == "/returns":
-            return self._page(request, RETURNS)
+            if self.synced_once:
+                return self._page(request, [r for r in self.returns if r.get("modifiedDate")])
+            self.synced_once = True
+            return self._page(request, self.returns)
         if path == "/users":
             return self._page(request, USERS)
         return httpx.Response(404)

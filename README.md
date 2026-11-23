@@ -11,10 +11,12 @@ Bot dành cho hệ thống nhà phân phối bánh kẹo dùng KiotViet. Bot t�
 - [x] Tài liệu giới thiệu dễ đọc cho chủ hệ thống (PDF khổ điện thoại + ảnh từng trang để gửi Zalo).
 - [x] Kế hoạch kỹ thuật chi tiết.
 - [x] **Code giai đoạn 0:** lệnh `probe` gọi thử API thật và tự trả lời các câu hỏi ở mục 3 của kế hoạch.
-- [x] **Code giai đoạn 1 (tồn kho, 1 NPP):** đồng bộ hàng, tồn, lô, hóa đơn; 3 loại báo cáo theo lịch; `/ton`, `/hethan`, `/baocao`; file Excel. 45 test chạy trên dữ liệu giả.
-- [ ] **Đang chờ:** chủ hệ thống trả lời 6 câu hỏi ở trang 10 của tài liệu (ngưỡng, số ngày báo trước hạn, giờ gửi). Hiện bot dùng giá trị mặc định.
+- [x] **Code giai đoạn 1 (tồn kho, 1 NPP):** đồng bộ hàng, tồn, lô, hóa đơn; 3 loại báo cáo theo lịch; `/ton`, `/hethan`, `/baocao`; file Excel.
+- [x] **Code giai đoạn 2 (nhân viên):** đồng bộ nhân viên và phiếu trả hàng; doanh thu, số đơn, số cửa hàng, số lượng theo mặt hàng; `/nv`, `/top`; nạp chỉ tiêu từ Excel bằng `/chitieu`; xếp hạng cuối ngày 18:00; lệnh `staff-check` để đối soát với KiotViet.
+- [x] 72 test chạy trên dữ liệu giả.
+- [ ] **Đang chờ:** chủ hệ thống trả lời 6 câu hỏi ở trang 10 của tài liệu (ngưỡng, số ngày báo trước hạn, giờ gửi, nhân viên có được xem xếp hạng không). Hiện bot dùng giá trị mặc định.
 - [ ] **Đang chờ:** Client ID/Secret KiotViet của 1 NPP thử và token bot Telegram, để chạy `probe` và đối chiếu số với KiotViet.
-- [ ] Giai đoạn 2: thống kê nhân viên, chỉ tiêu, xếp hạng 18h.
+- [ ] Giai đoạn 3: nhiều NPP chạy cùng lúc, cảnh báo gấp, so sánh NPP.
 
 ## Trong repo có gì
 
@@ -71,6 +73,40 @@ python -m app.cli tenant-set 1 low_stock_qty_by_category '{"Kẹo": 50}'
 python -m app.cli tenant-list                                            # xem toàn bộ cấu hình
 ```
 
+### Giai đoạn 2: thống kê nhân viên
+
+Lệnh trong nhóm Telegram:
+
+| Lệnh | Ví dụ | Kết quả |
+|---|---|---|
+| `/nv tên [kỳ]` | `/nv Tuấn tháng 11` | doanh thu (đã trừ hàng trả), số đơn, số cửa hàng, mặt hàng bán nhiều nhất, % chỉ tiêu |
+| `/top [kỳ]` | `/top hôm nay` | xếp hạng nhân viên; xem một ngày thì so với hôm trước, xem một tháng thì kèm % chỉ tiêu |
+| `/chitieu [tháng]` | `/chitieu 12/2026` | bot gửi file mẫu điền sẵn nhân viên; điền rồi gửi lại trong 30 phút (hoặc gửi kèm ghi chú `/chitieu`). Chỉ quản trị viên nhóm dùng được |
+
+Kỳ: hôm nay, hôm qua, tuần này, tuần trước, tháng này, tháng trước, tháng 11, 11/2026, 22/11, 1/11-15/11. Nhắn tự do cũng được: "Tuấn tháng 11", "top hôm qua", "doanh thu Lan tuần này".
+
+Lúc 18:00 bot gửi xếp hạng cuối ngày, so với hôm qua, kèm danh sách người chậm tiến độ tháng (% đạt thấp hơn tiến độ tháng quá 10 điểm).
+
+**Trước khi dùng thật, đối soát doanh thu với KiotViet.** Tài liệu KiotViet chưa rõ nên có hai cách tính (mục 5.5 của kế hoạch):
+
+```bash
+python -m app.cli staff-check 1 "hôm qua"     # in 2 cột: theo tổng hóa đơn, theo cộng dòng hàng
+```
+
+So với KiotViet: Báo cáo → Nhân viên → Bán hàng, cùng ngày. Mặc định bot tính theo tổng hóa đơn; nếu cột "cộng dòng hàng" mới khớp thì chạy `tenant-set 1 revenue_mode lines`.
+
+Cấu hình thêm cho phần nhân viên:
+
+```bash
+python -m app.cli tenant-set 1 ranking_time 17:30              # giờ gửi xếp hạng; "off" để tắt
+python -m app.cli tenant-set 1 ranking_to_npp_groups false      # chỉ nhóm tổng của chủ nhận xếp hạng
+python -m app.cli tenant-set 1 skip_sundays true                # tiến độ tháng không tính Chủ nhật
+python -m app.cli tenant-set 1 behind_margin 15                 # "chậm tiến độ" khi thấp hơn tiến độ quá 15 điểm
+python -m app.cli targets-template 1 --month 12/2026            # file mẫu chỉ tiêu, không qua Telegram
+python -m app.cli targets-import 1 chi-tieu.xlsx                # nạp chỉ tiêu từ file
+python -m app.cli top 1 "tháng này"                             # in xếp hạng ra màn hình
+```
+
 Các lệnh khác: `python -m app.cli -h`.
 
 ## Sửa và xuất lại tài liệu
@@ -90,5 +126,5 @@ Script xuất lại PDF và 10 ảnh, đồng thời cảnh báo nếu có trang
 
 1. Lấy Client ID/Secret của 1 NPP thử và token bot Telegram, điền vào `.env` (**không commit**, `.gitignore` đã chặn).
 2. Chạy `python -m app.cli probe`, sửa code theo kết quả nếu tên trường thật khác tài liệu.
-3. Đồng bộ, so báo cáo với màn hình KiotViet, rồi chạy bot thật cho anh rể dùng thử.
-4. Cài lên VPS (mục 10 của kế hoạch), sau đó làm giai đoạn 2.
+3. Đồng bộ, so báo cáo tồn kho với KiotViet, chạy `staff-check` để chọn cách tính doanh thu, rồi chạy bot thật cho anh rể dùng thử.
+4. Cài lên VPS (mục 10 của kế hoạch), sau đó làm giai đoạn 3.
